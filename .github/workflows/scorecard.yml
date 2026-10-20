@@ -11,6 +11,8 @@ permissions: read-all
 
 jobs:
   analysis:
+    # Scorecard can only publish results for public repositories.
+    if: github.event.repository.private == false
     runs-on: ubuntu-latest
     permissions:
       security-events: write
