@@ -105,14 +105,14 @@ impl From<io::Error> for ResolveError {
 
 const ENV_HINT_VARS: &[&str] = &[
     "npm_lifecycle_event",
-    "npm_config_user_agent",
     "PIP_BUILD_TRACKER",
     "OUT_DIR",
     "CARGO_MANIFEST_DIR",
     "CLAUDECODE",
-    "CODEX_SANDBOX",
+    "AI_AGENT",
     "GEMINI_CLI",
-    "AIDER_MODEL",
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
 ];
 
 /// Resolve the thread ID from a FUSE request header into a pinned caller.
@@ -283,8 +283,10 @@ fn read_env_hints(pid: i32) -> Vec<String> {
     raw.split(|b| *b == 0)
         .filter_map(|kv| {
             let kv = String::from_utf8_lossy(kv);
-            let (k, _) = kv.split_once('=')?;
-            ENV_HINT_VARS.contains(&k).then(|| k.to_string())
+            let (k, v) = kv.split_once('=')?;
+            ENV_HINT_VARS
+                .contains(&k)
+                .then(|| format!("{k}={}", v.chars().take(128).collect::<String>()))
         })
         .collect()
 }
