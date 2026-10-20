@@ -34,6 +34,23 @@ exe, cmdline (marked untrusted), cgroup and ancestry. Also logged: fd
 passing between processes, write attempts, callers that couldn't be
 identified, and an unmount env-ghost didn't start.
 
+## Known bypasses in this tier
+
+Measured by the harness ([results](harness-results.md)) in unprivileged
+mode:
+
+- **MAP_PRIVATE page cache sharing.** Reads use direct I/O, but private
+  mappings of a FUSE file go through the page cache. A process that keeps a
+  private mapping open while a trusted process maps the file gets the
+  trusted process's pages, the real secret, the next time it touches its
+  own mapping. That refault never reaches env-ghost, so it is neither
+  blocked nor logged. A fresh mapping is not affected. Details in
+  [design.md](design.md#mmap).
+- **Unmounting or killing the daemon** exposes the plaintext underneath.
+- **Running a trusted executable** and having it print the file.
+- **Double fork plus a cleared environment** escapes the install rules.
+- **Reading a trusted process's memory or a child's environment.**
+
 ## What it doesn't touch
 
 - **The plaintext on disk.** In M0/M1 the real file stays where it was,
@@ -55,8 +72,6 @@ identified, and an unmount env-ghost didn't start.
 - **Deliberate lineage evasion.** A payload that double-forks and clears its
   environment loses the signals the install rules rely on. Whether that
   gets it the real file depends on what else your policy trusts.
-- **Shared page cache through mmap.** A process holding a private mapping
-  can pick up pages a trusted process faulted in. See design.md.
 - **Raw private key files** such as `~/.ssh/id_ed25519`. Not handled.
 - **Other users and root.** The mount is only accessible to the mounting
   user. Root can read the file underneath at any time.
