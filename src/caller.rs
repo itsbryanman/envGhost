@@ -51,6 +51,9 @@ impl SessionKind {
 pub struct SessionRoot {
     pub kind: SessionKind,
     pub pid: i32,
+    /// The root's executable is owned by root and not writable by anyone else.
+    /// A user can drop a binary named tmux in ~/bin; it can't do this.
+    pub verified: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,23 +128,25 @@ pub fn resolve(tid: u32) -> Result<Caller, ResolveError> {
     let pidfd = pidfd_open(tgid)?;
     let proc = read_proc(tgid)?;
 
-    let mut ancestry = Vec::new();
-    let mut session_root = session_kind(&proc).map(|kind| SessionRoot { kind, pid: tgid });
+    let mut ancestry: Vec<ProcInfo> = Vec::new();
+    let mut session_root = session_root_of(&proc);
     let mut reached_init = false;
     let mut ppid = proc.ppid;
+    let mut child_start = proc.start_time;
     while session_root.is_none() && ancestry.len() < MAX_ANCESTRY {
         if ppid <= 1 {
             reached_init = ppid == 1;
             break;
         }
         let Ok(parent) = read_proc(ppid) else { break };
-        let next = parent.ppid;
-        if let Some(kind) = session_kind(&parent) {
-            session_root = Some(SessionRoot {
-                kind,
-                pid: parent.pid,
-            });
+        // A parent can't be younger than its child. If it is, the real parent
+        // exited and the pid now belongs to an unrelated process.
+        if parent.start_time > child_start {
+            break;
         }
+        child_start = parent.start_time;
+        let next = parent.ppid;
+        session_root = session_root_of(&parent);
         ancestry.push(parent);
         ppid = next;
     }
@@ -153,6 +158,11 @@ pub fn resolve(tid: u32) -> Result<Caller, ResolveError> {
     // reports exit. Either way the data may describe someone else.
     let start_again = read_start_time(tgid)?;
     if start_again != proc.start_time || pidfd_exited(&pidfd) {
+        return Err(ResolveError::Raced);
+    }
+    // The requesting thread is blocked in our syscall and can only disappear
+    // if it was killed. If it did, its tid may now be in another process.
+    if read_tgid(tid).ok() != Some(tgid) {
         return Err(ResolveError::Raced);
     }
 
@@ -287,7 +297,21 @@ fn exe_name(p: &ProcInfo) -> Option<&str> {
 
 /// Session roots are where we stop walking. These programs reparent or detach
 /// their children on purpose, so anything above them says nothing about the
-/// caller.
+/// caller. Only verified roots end the walk; an unverified match is recorded
+/// but the walk continues so a fake tmux can't hide its own parents.
+fn session_root_of(p: &ProcInfo) -> Option<SessionRoot> {
+    let kind = session_kind(p)?;
+    let verified = exe_root_owned(p.pid);
+    if !verified && kind != SessionKind::VscodeServer {
+        return None;
+    }
+    Some(SessionRoot {
+        kind,
+        pid: p.pid,
+        verified,
+    })
+}
+
 fn session_kind(p: &ProcInfo) -> Option<SessionKind> {
     let exe = p.exe.as_deref()?;
     match exe_name(p)? {
@@ -299,10 +323,21 @@ fn session_kind(p: &ProcInfo) -> Option<SessionKind> {
         }
         _ => {}
     }
+    // vscode-server lives in the user's home, so it can never be verified.
     if exe.contains("/.vscode-server/") || exe.contains("/.vscode-server-insiders/") {
         return Some(SessionKind::VscodeServer);
     }
     None
+}
+
+/// stat through /proc/<pid>/exe reaches the inode actually mapped, even if
+/// the path was replaced after exec.
+pub fn exe_root_owned(pid: i32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match fs::metadata(format!("/proc/{pid}/exe")) {
+        Ok(m) => m.uid() == 0 && m.mode() & 0o022 == 0,
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
