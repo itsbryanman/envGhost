@@ -55,7 +55,7 @@ pub fn mounted(path: &Path) -> bool {
 /// Send one fd over a connected unix socket with SCM_RIGHTS.
 pub fn send_fd(sock: RawFd, fd: RawFd) -> io::Result<()> {
     unsafe {
-        let mut byte = [b'F'];
+        let mut byte = *b"F";
         let mut iov = libc::iovec {
             iov_base: byte.as_mut_ptr() as *mut libc::c_void,
             iov_len: 1,
