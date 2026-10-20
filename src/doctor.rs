@@ -69,10 +69,15 @@ pub fn run() -> bool {
     println!();
     println!("kernel     {kernel}");
     if blockers.is_empty() {
-        println!("watch and guard can run here (unprivileged mode: same-UID processes are not isolated)");
+        println!(
+            "watch and guard can run here (unprivileged mode: same-UID processes are not isolated)"
+        );
         true
     } else {
-        println!("watch and guard can't run here: missing {}", blockers.join(", "));
+        println!(
+            "watch and guard can't run here: missing {}",
+            blockers.join(", ")
+        );
         if container.is_some() {
             println!(
                 "in docker, these run args would provide what's missing: \
@@ -125,7 +130,9 @@ fn probe_fuse(euid: u32) -> Line {
     match find_in_path("fusermount3") {
         Some(p) => {
             let m = fs::metadata(&p).ok();
-            let setuid = m.as_ref().is_some_and(|m| m.permissions().mode() & 0o4000 != 0 && m.uid() == 0);
+            let setuid = m
+                .as_ref()
+                .is_some_and(|m| m.permissions().mode() & 0o4000 != 0 && m.uid() == 0);
             if setuid {
                 Line {
                     name: "fuse",
@@ -136,7 +143,10 @@ fn probe_fuse(euid: u32) -> Line {
                 Line {
                     name: "fuse",
                     status: Status::No,
-                    detail: format!("{} is not setuid root, so unprivileged mounts fail", p.display()),
+                    detail: format!(
+                        "{} is not setuid root, so unprivileged mounts fail",
+                        p.display()
+                    ),
                 }
             }
         }
@@ -226,7 +236,10 @@ fn probe_yama() -> Line {
                     Status::Warn,
                     "any same-uid process can read another's memory (/proc/<pid>/mem, ptrace)",
                 ),
-                "1" => (Status::Ok, "only ancestors can ptrace or read /proc/<pid>/mem"),
+                "1" => (
+                    Status::Ok,
+                    "only ancestors can ptrace or read /proc/<pid>/mem",
+                ),
                 "2" => (Status::Ok, "only CAP_SYS_PTRACE can ptrace"),
                 "3" => (Status::Ok, "ptrace disabled"),
                 _ => (Status::Warn, "unknown value"),

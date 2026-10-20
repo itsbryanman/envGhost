@@ -239,8 +239,8 @@ fn split_on_newlines(
     end: usize,
 ) {
     let mut s = start;
-    for p in start..end {
-        if src[p] == b'\n' || src[p] == b'\r' {
+    for (p, b) in src.iter().enumerate().take(end).skip(start) {
+        if *b == b'\n' || *b == b'\r' {
             if p > s {
                 out.push(Value {
                     key: key.clone(),
@@ -325,7 +325,10 @@ fn alphabet_for(rest: &[u8]) -> &'static [u8] {
     const BASE62: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     if rest.iter().all(u8::is_ascii_digit) {
         DIGITS
-    } else if rest.iter().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b)) {
+    } else if rest
+        .iter()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+    {
         HEX
     } else if rest
         .iter()
@@ -419,10 +422,17 @@ DB_URL=postgres://u:p@h:5432/db\r
         assert_eq!(c.len(), s.len());
         let c = String::from_utf8(c).unwrap();
         assert!(!c.contains("51HxQabcDEF123"));
-        let line = c.lines().find(|l| l.starts_with("AWS_ACCESS_KEY_ID")).unwrap();
+        let line = c
+            .lines()
+            .find(|l| l.starts_with("AWS_ACCESS_KEY_ID"))
+            .unwrap();
         let v = line.rsplit(' ').next().unwrap();
         assert!(v.starts_with("AKIA"));
-        assert!(v[4..].bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()));
+        assert!(
+            v[4..]
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        );
         let port = c.lines().find(|l| l.starts_with("PORT=")).unwrap();
         assert!(port[5..].bytes().all(|b| b.is_ascii_digit()));
     }

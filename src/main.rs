@@ -9,7 +9,11 @@ use env_ghost::policy::Policy;
 use env_ghost::{audit, caller, daemon, doctor};
 
 #[derive(Parser)]
-#[command(name = "env-ghost", version, about = "Caller-aware secrets filesystem for Linux")]
+#[command(
+    name = "env-ghost",
+    version,
+    about = "Caller-aware secrets filesystem for Linux"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,

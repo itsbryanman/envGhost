@@ -16,7 +16,10 @@ fn main() {
     let len = fs::metadata(path).unwrap().len() as usize;
 
     let shared = match Mapping::shared(path, len) {
-        Ok(m) => format!("MAP_SHARED mapped and read as {}", describe(&m.bytes(), secret)),
+        Ok(m) => format!(
+            "MAP_SHARED mapped and read as {}",
+            describe(&m.bytes(), secret)
+        ),
         Err(e) => format!("MAP_SHARED fails: {e}"),
     };
 

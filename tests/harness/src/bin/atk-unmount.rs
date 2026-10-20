@@ -54,7 +54,10 @@ fn main() {
         ),
     );
 
-    let r = Command::new(env_ghost).args(["restore", file]).output().unwrap();
+    let r = Command::new(env_ghost)
+        .args(["restore", file])
+        .output()
+        .unwrap();
     let after = fs::read(file).unwrap_or_default();
     report(
         "fusermount-u-restore",

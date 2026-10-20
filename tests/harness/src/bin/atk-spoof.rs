@@ -19,14 +19,25 @@ fn main() {
         comm[..name.len().min(15)].copy_from_slice(&name.as_bytes()[..name.len().min(15)]);
         unsafe { libc::prctl(libc::PR_SET_NAME, comm.as_ptr()) };
         let got = fs::read(file).unwrap_or_default();
-        println!("{}", if has(&got, secret) { "real" } else { describe(&got, secret) });
+        println!(
+            "{}",
+            if has(&got, secret) {
+                "real"
+            } else {
+                describe(&got, secret)
+            }
+        );
         return;
     }
 
     let (file, secret, trusted) = (&a[1], &a[2], &a[3]);
     let me = std::env::current_exe().unwrap();
     let disguises: [(&str, &[&str], &str); 3] = [
-        ("node", &["/usr/lib/node_modules/npm/bin/npm-cli.js", "run", "dev"], "node"),
+        (
+            "node",
+            &["/usr/lib/node_modules/npm/bin/npm-cli.js", "run", "dev"],
+            "node",
+        ),
         ("npm", &["start"], "npm"),
         (trusted.as_str(), &["read"], "eg-trusted"),
     ];
@@ -47,7 +58,11 @@ fn main() {
     }
     report(
         "spoof-argv-comm",
-        if leaked { Verdict::Bypassed } else { Verdict::Held },
+        if leaked {
+            Verdict::Bypassed
+        } else {
+            Verdict::Held
+        },
         "forge argv[0] and comm as node, npm, and the trusted helper",
         &results.join(", "),
     );

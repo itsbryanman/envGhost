@@ -27,7 +27,12 @@ fn main() {
             Ok(b) if has(&b, secret) => leaked += 1,
             Ok(b) if b.starts_with(b"# env-ghost is not running") => stub += 1,
             Ok(_) => {}
-            Err(e) if matches!(e.raw_os_error(), Some(libc::ENOTCONN) | Some(libc::ECONNABORTED)) => {
+            Err(e)
+                if matches!(
+                    e.raw_os_error(),
+                    Some(libc::ENOTCONN) | Some(libc::ECONNABORTED)
+                ) =>
+            {
                 gap_errors += 1;
                 last_gap = Some(Instant::now());
             }

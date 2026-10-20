@@ -36,7 +36,7 @@ fn main() {
             // environment, like a wrapper that loads .env and execs an app.
             let secret = fs::read_to_string(&a[2]).expect("read");
             let me = std::env::current_exe().unwrap();
-            let child = Command::new(me)
+            let mut child = Command::new(me)
                 .arg("sleep")
                 .env("HELD_ENV", secret.replace('\n', ";"))
                 .spawn()
@@ -45,6 +45,8 @@ fn main() {
             std::io::stdout().flush().unwrap();
             std::thread::sleep(Duration::from_secs(30));
             std::hint::black_box(&secret);
+            let _ = child.kill();
+            let _ = child.wait();
         }
         Some("sleep") => std::thread::sleep(Duration::from_secs(30)),
         _ => {

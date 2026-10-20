@@ -93,7 +93,10 @@ impl Daemon {
         };
         let t = Instant::now();
         while !mounted(file) {
-            assert!(t.elapsed() < Duration::from_secs(10), "mount never appeared");
+            assert!(
+                t.elapsed() < Duration::from_secs(10),
+                "mount never appeared"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
         d
@@ -167,7 +170,10 @@ fn helper_reader() {
     std::io::stdin().lock().read_line(&mut line).unwrap();
     let mut buf = Vec::new();
     f.read_to_end(&mut buf).unwrap();
-    println!("EG_DATA:{}", String::from_utf8_lossy(&buf).replace('\n', "|"));
+    println!(
+        "EG_DATA:{}",
+        String::from_utf8_lossy(&buf).replace('\n', "|")
+    );
 }
 
 struct Reader {
@@ -180,7 +186,12 @@ impl Reader {
     fn open(exe: &Path, file: &Path) -> Reader {
         use std::io::BufRead;
         let mut child = Command::new(exe)
-            .args(["--exact", "helper_reader", "--nocapture", "--test-threads=1"])
+            .args([
+                "--exact",
+                "helper_reader",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env_clear()
             .env("EG_HELPER_FILE", file)
             .stdin(Stdio::piped())
@@ -252,9 +263,18 @@ fn two_callers_get_different_views_back_to_back() {
             let red = b.read();
             (a.read(), red)
         };
-        assert!(real.contains(SECRET), "round {round}: trusted reader got {real}");
-        assert!(!red.contains(SECRET), "round {round}: untrusted reader got the secret");
-        assert!(red.contains("STRIPE_KEY=sk_test_xxxx"), "round {round}: {red}");
+        assert!(
+            real.contains(SECRET),
+            "round {round}: trusted reader got {real}"
+        );
+        assert!(
+            !red.contains(SECRET),
+            "round {round}: untrusted reader got the secret"
+        );
+        assert!(
+            red.contains("STRIPE_KEY=sk_test_xxxx"),
+            "round {round}: {red}"
+        );
         assert_eq!(real.len(), red.len());
     }
     d.stop();
@@ -290,7 +310,10 @@ fn watch_serves_real_and_restores_byte_for_byte() {
     let file = s.env_file(&original);
     let d = Daemon::start(&s, "watch", &file, None);
     let mut got = Vec::new();
-    fs::File::open(&file).unwrap().read_to_end(&mut got).unwrap();
+    fs::File::open(&file)
+        .unwrap()
+        .read_to_end(&mut got)
+        .unwrap();
     assert_eq!(got, original);
     d.stop();
     assert_eq!(fs::read(&file).unwrap(), original);
@@ -308,10 +331,7 @@ fn writes_fail_cleanly() {
     let s = Scratch::new("write");
     let file = s.env_file(&sample());
     let d = Daemon::start(&s, "guard", &file, None);
-    let err = fs::OpenOptions::new()
-        .append(true)
-        .open(&file)
-        .unwrap_err();
+    let err = fs::OpenOptions::new().append(true).open(&file).unwrap_err();
     assert_eq!(err.raw_os_error(), Some(libc::EROFS));
     let tmp = s.dir.join("tmp");
     fs::write(&tmp, b"X=1\n").unwrap();
@@ -377,7 +397,11 @@ fn sigkill_during_read_loop_leaves_stub_not_enotconn() {
     );
     assert!(stub_reads > 0, "path never showed the stub");
     assert!(!mounted(&file));
-    assert!(fs::read(&file).unwrap().starts_with(b"# env-ghost is not running"));
+    assert!(
+        fs::read(&file)
+            .unwrap()
+            .starts_with(b"# env-ghost is not running")
+    );
 
     let out = Command::new(env!("CARGO_BIN_EXE_env-ghost"))
         .arg("restore")

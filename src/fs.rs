@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use fuser::{
-    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, INodeNo, LockOwner,
-    OpenAccMode, OpenFlags, ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite,
-    Request, TimeOrNow, WriteFlags,
+    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, INodeNo, LockOwner, OpenAccMode,
+    OpenFlags, ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request,
+    TimeOrNow, WriteFlags,
 };
 
 use crate::audit::{Audit, Event};
@@ -32,7 +32,8 @@ impl Mode {
     }
 }
 
-const WRITE_HINT: &str = "writes are not supported yet; stop env-ghost, edit the file, start it again";
+const WRITE_HINT: &str =
+    "writes are not supported yet; stop env-ghost, edit the file, start it again";
 
 pub struct Views {
     pub real: Vec<u8>,
@@ -281,7 +282,8 @@ impl Filesystem for GhostFs {
             ev.caller = c.clone();
             ev.opener = opener;
             ev.decision = Some(d.clone());
-            self.audit.record(&ev.note("reader is not the process that opened the file"));
+            self.audit
+                .record(&ev.note("reader is not the process that opened the file"));
         }
         let data = self.views.get(view);
         let start = (offset as usize).min(data.len());

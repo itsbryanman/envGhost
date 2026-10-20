@@ -131,7 +131,10 @@ impl Policy {
         }
         let mut rules = Vec::new();
         for (i, spec) in file.rules.into_iter().enumerate() {
-            let name = spec.name.clone().unwrap_or_else(|| format!("rule {}", i + 1));
+            let name = spec
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("rule {}", i + 1));
             rules.push(compile(spec, &name).with_context(|| format!("rule {name:?}"))?);
         }
         let disabled = |n: &str| file.defaults.disable_builtin.iter().any(|b| b == n);
@@ -428,8 +431,7 @@ fn is_ai_agent(c: &Caller) -> bool {
                 .iter()
                 .take(2)
                 .any(|a| AGENT_BINARIES.contains(&base(a)))
-            || p
-                .cmdline_untrusted
+            || p.cmdline_untrusted
                 .iter()
                 .take(3)
                 .any(|a| AGENT_PACKAGES.iter().any(|pkg| a.contains(pkg)))
@@ -571,7 +573,11 @@ mod tests {
         let yes: &[&[&str]] = &[
             &["npm", "install"],
             &["npm", "ci"],
-            &["/usr/bin/node", "/usr/lib/node_modules/npm/bin/npm-cli.js", "i"],
+            &[
+                "/usr/bin/node",
+                "/usr/lib/node_modules/npm/bin/npm-cli.js",
+                "i",
+            ],
             &["pnpm", "add", "left-pad"],
             &["yarn"],
             &["yarn", "--frozen-lockfile"],
@@ -606,7 +612,10 @@ mod tests {
             &["build-script-build"],
             CG,
         );
-        assert_eq!(p.decide(&caller(bs, vec![])).rule, "builtin:package-install");
+        assert_eq!(
+            p.decide(&caller(bs, vec![])).rule,
+            "builtin:package-install"
+        );
         let rustc = proc(10, "/home/u/.rustup/toolchains/x/bin/rustc", &["rustc"], CG);
         assert_eq!(
             p.decide(&caller(rustc, vec![])).rule,
@@ -625,7 +634,8 @@ mod tests {
             view = "real"
             exe = "/usr/bin/cat"
         "#;
-        let allow_cat = Policy::parse("[[rule]]\nview = \"real\"\nexe = \"/usr/bin/cat\"\n").unwrap();
+        let allow_cat =
+            Policy::parse("[[rule]]\nview = \"real\"\nexe = \"/usr/bin/cat\"\n").unwrap();
         let agent = proc(9, "/home/u/.local/bin/claude", &["claude"], CG);
         let cat = proc(10, "/usr/bin/cat", &["cat", ".env"], CG);
         let c = caller(cat, vec![agent]);

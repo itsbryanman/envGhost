@@ -102,7 +102,9 @@ pub fn recv_fd(sock: RawFd) -> io::Result<RawFd> {
         if cmsg.is_null() || (*cmsg).cmsg_type != libc::SCM_RIGHTS {
             return Err(io::Error::other("no fd received"));
         }
-        Ok(std::ptr::read_unaligned(libc::CMSG_DATA(cmsg) as *const RawFd))
+        Ok(std::ptr::read_unaligned(
+            libc::CMSG_DATA(cmsg) as *const RawFd
+        ))
     }
 }
 

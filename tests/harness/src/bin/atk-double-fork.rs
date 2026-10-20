@@ -62,8 +62,8 @@ fn main() {
                         std::thread::sleep(Duration::from_millis(5));
                     }
                     let new_parent = unsafe { libc::getppid() };
-                    let parent_comm = fs::read_to_string(format!("/proc/{new_parent}/comm"))
-                        .unwrap_or_default();
+                    let parent_comm =
+                        fs::read_to_string(format!("/proc/{new_parent}/comm")).unwrap_or_default();
                     let note_base = format!(
                         "before fork: {}; reparented to pid {new_parent} ({})",
                         describe(&before, secret),
