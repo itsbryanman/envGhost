@@ -236,43 +236,34 @@ fn compile(spec: RuleSpec, name: &str) -> Result<Rule> {
 
 impl Rule {
     fn matches(&self, c: &Caller) -> bool {
-        if let Some(p) = &self.exe
-            && !c.proc.exe.as_deref().is_some_and(|e| p.matches(e))
-        {
-            return false;
-        }
-        if let Some(p) = &self.cgroup
-            && !c.proc.cgroup.as_deref().is_some_and(|g| p.matches(g))
-        {
-            return false;
-        }
-        if let Some(kind) = self.session_root {
-            let ok = c.session_root.as_ref().is_some_and(|r| {
-                r.kind == kind && (r.verified || kind == SessionKind::VscodeServer)
+        let opt = |s: Option<&str>, p: &Pattern| s.is_some_and(|s| p.matches(s));
+        let hit = self
+            .exe
+            .as_ref()
+            .is_none_or(|p| opt(c.proc.exe.as_deref(), p))
+            && self
+                .cgroup
+                .as_ref()
+                .is_none_or(|p| opt(c.proc.cgroup.as_deref(), p))
+            && self.session_root.is_none_or(|kind| {
+                c.session_root.as_ref().is_some_and(|r| {
+                    r.kind == kind && (r.verified || kind == SessionKind::VscodeServer)
+                })
+            })
+            && self
+                .ancestor_exe
+                .as_ref()
+                .is_none_or(|p| c.ancestry.iter().any(|a| opt(a.exe.as_deref(), p)))
+            && self
+                .cmdline
+                .as_ref()
+                .is_none_or(|p| p.matches(&c.proc.cmdline_untrusted.join(" ")))
+            && self.ancestor_cmdline.as_ref().is_none_or(|p| {
+                c.ancestry
+                    .iter()
+                    .any(|a| p.matches(&a.cmdline_untrusted.join(" ")))
             });
-            if !ok {
-                return false;
-            }
-        }
-        if let Some(p) = &self.ancestor_exe
-            && !c
-                .ancestry
-                .iter()
-                .any(|a| a.exe.as_deref().is_some_and(|e| p.matches(e)))
-        {
-            return false;
-        }
-        if let Some(p) = &self.cmdline
-            && !p.matches(&c.proc.cmdline_untrusted.join(" "))
-        {
-            return false;
-        }
-        if let Some(p) = &self.ancestor_cmdline
-            && !c
-                .ancestry
-                .iter()
-                .any(|a| p.matches(&a.cmdline_untrusted.join(" ")))
-        {
+        if !hit {
             return false;
         }
         if self.view == View::Real {
