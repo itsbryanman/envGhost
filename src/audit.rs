@@ -176,14 +176,16 @@ pub fn render(ev: &Event) -> String {
 }
 
 /// Callers choose their argv, comm and even exe path, and the log may be read
-/// in a terminal. Escape anything that could move the cursor or set colors.
+/// in a terminal. Anything outside printable ASCII is escaped: control codes
+/// can move the cursor, and bidi or zero-width characters can make a line
+/// read differently from what it says. The JSON log keeps the raw text.
 fn sanitize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if c.is_control() {
-            out.push_str(&format!("\\x{:02x}", c as u32));
-        } else {
-            out.push(c);
+        match c as u32 {
+            0x20..=0x7e => out.push(c),
+            n if n <= 0xff => out.push_str(&format!("\\x{n:02x}")),
+            n => out.push_str(&format!("\\u{{{n:04x}}}")),
         }
     }
     out
@@ -282,5 +284,6 @@ mod tests {
     #[test]
     fn escapes_control_characters() {
         assert_eq!(sanitize("a\x1b[2Jb\nc\u{9b}"), "a\\x1b[2Jb\\x0ac\\x9b");
+        assert_eq!(sanitize("npm\u{202e}lmth.exe"), "npm\\u{202e}lmth.exe");
     }
 }
