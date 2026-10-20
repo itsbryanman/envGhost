@@ -309,9 +309,10 @@ fn spawn_watchdog(path: &Path, original: &[u8]) -> Result<Watchdog> {
     stdin.write_all(original)?;
     stdin.flush()?;
     let mut ack = [0u8; 1];
-    stdout
-        .read_exact(&mut ack)
-        .context("watchdog did not acknowledge")?;
+    if stdout.read_exact(&mut ack).is_err() {
+        let _ = child.wait();
+        bail!("watchdog failed to start (see above); not mounting without crash recovery");
+    }
     if &ack != b"R" {
         bail!("watchdog sent unexpected ack");
     }
@@ -339,12 +340,22 @@ pub fn watchdog_main(path: &Path) -> Result<()> {
     stdin.read_exact(&mut len)?;
     let mut original = vec![0u8; u64::from_le_bytes(len) as usize];
     stdin.read_exact(&mut original)?;
+
+    // Bind now, not after a crash. If restore can't work, the daemon must
+    // find out before it replaces the file with the stub.
+    let sock = socket_path(path)?;
+    audit::ensure_private_dir(sock.parent().unwrap())?;
+    let _ = fs::remove_file(&sock);
+    let listener = UnixListener::bind(&sock)
+        .with_context(|| format!("binding restore socket {}", sock.display()))?;
+
     std::io::stdout().write_all(b"R")?;
     std::io::stdout().flush()?;
 
     let mut msg = [0u8; 1];
     let n = stdin.read(&mut msg).unwrap_or(0);
     if n == 1 && &msg == b"C" {
+        let _ = fs::remove_file(&sock);
         return Ok(());
     }
 
@@ -371,11 +382,6 @@ pub fn watchdog_main(path: &Path) -> Result<()> {
         Err(e) => eprintln!("env-ghost: daemon for {} died and detach failed: {e:#}", path.display()),
     }
 
-    let sock = socket_path(path)?;
-    audit::ensure_private_dir(sock.parent().unwrap())?;
-    let _ = fs::remove_file(&sock);
-    let listener = UnixListener::bind(&sock)
-        .with_context(|| format!("binding {}", sock.display()))?;
     for conn in listener.incoming() {
         let Ok(mut conn) = conn else { continue };
         let mut req = String::new();
@@ -411,13 +417,13 @@ pub fn watchdog_main(path: &Path) -> Result<()> {
 
 pub fn restore(path: &Path, force: bool) -> Result<()> {
     let path = fs::canonicalize(path).with_context(|| format!("resolving {}", path.display()))?;
+    if is_ghost_mount(&path) {
+        bail!("{} is mounted; env-ghost is still running", path.display());
+    }
     let sock = socket_path(&path)?;
     let mut conn = match UnixStream::connect(&sock) {
         Ok(c) => c,
         Err(_) => {
-            if is_ghost_mount(&path) {
-                bail!("{} is mounted; env-ghost is still running", path.display());
-            }
             bail!(
                 "no watchdog is holding {}. if the daemon was stopped cleanly the file \
                  is already restored; if the machine rebooted, the copy is gone",
