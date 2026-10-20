@@ -45,7 +45,8 @@ pub struct Value {
 /// Dotenv has no single grammar, so this fails closed wherever dialects
 /// disagree. Comment bodies are masked (people comment out old keys). An
 /// unquoted value runs to end of line, since docker env files have no inline
-/// comments. A lone CR ends a line, since some parsers treat it that way.
+/// comments. A lone CR ends a line for some parsers and not others, so the
+/// text after one is masked whole.
 /// Lines that are not KEY=VALUE are masked whole.
 pub fn dotenv_values(src: &[u8]) -> Vec<Value> {
     let mut out = Vec::new();
@@ -56,6 +57,13 @@ pub fn dotenv_values(src: &[u8]) -> Vec<Value> {
         let lead = line.iter().take_while(|b| is_blank(**b)).count();
         let body = &line[lead..];
         if body.is_empty() {
+            i = next_line(src, line_end);
+            continue;
+        }
+        // An LF-only parser sees this line as the tail of the previous value,
+        // so its key bytes are value bytes there. Mask all of it.
+        if i > 0 && src[i - 1] == b'\r' {
+            push_opaque(src, &mut out, i + lead, line_end);
             i = next_line(src, line_end);
             continue;
         }
@@ -402,7 +410,7 @@ DB_URL=postgres://u:p@h:5432/db\r
         let s = b"# note\rSECRET=hunter2\r\nB=1\rC=2";
         let r = redact(s);
         assert_eq!(r.len(), s.len());
-        assert_eq!(&r[..], b"# xxxx\rSECRET=xxxxxxx\r\nB=0\rC=0");
+        assert_eq!(&r[..], b"# xxxx\rxxxxxxxxxxxxxx\r\nB=0\rxxx");
     }
 
     #[test]
