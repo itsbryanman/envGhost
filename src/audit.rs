@@ -137,11 +137,11 @@ pub fn render(ev: &Event) -> String {
         other => s.push_str(&format!("{other:<16}")),
     }
     if let Some(c) = &ev.caller {
-        let exe = c.proc.exe.as_deref().unwrap_or("?");
+        let exe = sanitize(c.proc.exe.as_deref().unwrap_or("?"));
         s.push_str(&format!(
             " {} {exe} \"{}\"",
             c.identity.tgid,
-            truncate(&c.proc.cmdline_untrusted.join(" "), 60)
+            truncate(&sanitize(&c.proc.cmdline_untrusted.join(" ")), 60)
         ));
         let chain: Vec<String> = c
             .ancestry
@@ -169,18 +169,32 @@ pub fn render(ev: &Event) -> String {
         s.push_str(&format!(" opener={}", o.tgid));
     }
     if let Some(n) = &ev.note {
-        s.push_str(&format!(" ({n})"));
+        s.push_str(&format!(" ({})", sanitize(n)));
     }
-    s.push_str(&format!(" {}", ev.file));
+    s.push_str(&format!(" {}", sanitize(&ev.file)));
     s
+}
+
+/// Callers choose their argv, comm and even exe path, and the log may be read
+/// in a terminal. Escape anything that could move the cursor or set colors.
+fn sanitize(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() {
+            out.push_str(&format!("\\x{:02x}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn short_name(p: &crate::caller::ProcInfo) -> String {
     p.exe
         .as_deref()
         .and_then(|e| e.rsplit('/').next())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("\"{}\"", p.comm_untrusted))
+        .map(sanitize)
+        .unwrap_or_else(|| format!("\"{}\"", sanitize(&p.comm_untrusted)))
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -257,6 +271,16 @@ fn print_line(line: &str, json: bool) {
     }
     match serde_json::from_str::<Event>(line) {
         Ok(ev) => println!("{}", render(&ev)),
-        Err(_) => println!("unparsable: {line}"),
+        Err(_) => println!("unparsable: {}", sanitize(line)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escapes_control_characters() {
+        assert_eq!(sanitize("a\x1b[2Jb\nc\u{9b}"), "a\\x1b[2Jb\\x0ac\\x9b");
     }
 }
