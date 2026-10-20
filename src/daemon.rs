@@ -1,8 +1,7 @@
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,15 +12,7 @@ use crate::audit::{self, Audit, Event};
 use crate::fs::{GhostFs, Mode, Views};
 use crate::policy::Policy;
 
-pub const STUB_PREFIX: &str = "# env-ghost is not running";
 const MAX_FILE: u64 = 1 << 20;
-
-pub fn stub_for(path: &Path) -> String {
-    format!(
-        "{STUB_PREFIX}. if it crashed, run: env-ghost restore {}\n",
-        path.display()
-    )
-}
 
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
@@ -32,6 +23,9 @@ pub struct Options {
     pub quiet: bool,
 }
 
+/// Mount over `path` and serve it until a signal arrives. The file on disk is
+/// never modified: the mount covers it, and when the mount goes away for any
+/// reason the original is what's there.
 pub fn run(path: &Path, opts: Options) -> Result<()> {
     let path = fs::canonicalize(path).with_context(|| format!("resolving {}", path.display()))?;
     let meta = fs::metadata(&path)?;
@@ -45,31 +39,23 @@ pub fn run(path: &Path, opts: Options) -> Result<()> {
         bail!("{} is larger than {} bytes", path.display(), MAX_FILE);
     }
     let original = fs::read(&path)?;
-    if original.starts_with(STUB_PREFIX.as_bytes()) {
-        bail!(
-            "{} holds an env-ghost stub, so the real contents aren't here. \
-             try: env-ghost restore {}",
-            path.display(),
-            path.display()
-        );
-    }
 
     set_non_dumpable()?;
     let audit = Arc::new(Audit::open(!opts.quiet)?);
     let path_str = path.to_string_lossy().into_owned();
 
     eprintln!("env-ghost: same-UID isolation is not a security boundary");
+    eprintln!(
+        "env-ghost: the plaintext stays on disk under the mount; any process of this user can unmount it"
+    );
 
     // Block the signals we handle before any thread exists, so they all
     // inherit the mask and only the sigwait thread ever sees them.
     let sigs = block_signals();
 
-    let mut watchdog = spawn_watchdog(&path, &original)?;
+    let mut watchdog = spawn_watchdog(&path)?;
 
-    write_in_place(&path, stub_for(&path).as_bytes())
-        .with_context(|| format!("writing stub to {}", path.display()))?;
-
-    let views = Views::build(original.clone());
+    let views = Views::build(original);
     let fs = GhostFs::new(
         opts.mode,
         path_str.clone(),
@@ -89,9 +75,7 @@ pub fn run(path: &Path, opts: Options) -> Result<()> {
     let session = match fuser::Session::new(fs, &path, &config) {
         Ok(s) => s,
         Err(e) => {
-            let restored = write_in_place(&path, &original);
             watchdog.clean();
-            restored.context("mount failed and restoring the original also failed")?;
             return Err(e).with_context(|| format!("mounting over {}", path.display()));
         }
     };
@@ -124,8 +108,12 @@ pub fn run(path: &Path, opts: Options) -> Result<()> {
             loop {
                 let sig = wait_signal(&sigs);
                 SHUTTING_DOWN.store(true, Ordering::SeqCst);
-                match shutdown(&path, &original, &audit, sig) {
+                match lazy_unmount(&path) {
                     Ok(()) => {
+                        audit.record(
+                            &Event::new("stop", &path.to_string_lossy())
+                                .note(format!("signal {sig}")),
+                        );
                         watchdog.clean();
                         std::process::exit(0);
                     }
@@ -146,40 +134,16 @@ pub fn run(path: &Path, opts: Options) -> Result<()> {
             std::thread::park();
         }
     }
-    // Someone else unmounted us. Don't put the secrets back on disk: whoever
-    // did that would just read them. The watchdog keeps a copy for restore.
     let note = match res {
         Ok(()) => "unmounted by something other than env-ghost".to_string(),
         Err(e) => format!("fuse session ended: {e}"),
     };
     audit.record(&Event::new("external_unmount", &path_str).note(note.clone()));
     eprintln!(
-        "env-ghost: {note}; {} now shows the stub. env-ghost restore {} puts the original back",
-        path.display(),
+        "env-ghost: {note}; {} is the plain file again",
         path.display()
     );
     std::process::exit(3);
-}
-
-fn shutdown(path: &Path, original: &[u8], audit: &Audit, sig: i32) -> Result<()> {
-    lazy_unmount(path)?;
-    write_in_place(path, original).context("restoring original contents")?;
-    let back = fs::read(path)?;
-    if back != original {
-        bail!("restored file does not match the original");
-    }
-    let path_str = path.to_string_lossy();
-    audit.record(&Event::new("stop", &path_str).note(format!("signal {sig}, original restored")));
-    eprintln!("env-ghost: restored {}", path.display());
-    Ok(())
-}
-
-fn write_in_place(path: &Path, bytes: &[u8]) -> Result<()> {
-    // Same inode, so ownership, mode and hard links survive.
-    let mut f = OpenOptions::new().write(true).truncate(true).open(path)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    Ok(())
 }
 
 fn set_non_dumpable() -> Result<()> {
@@ -290,7 +254,7 @@ impl Watchdog {
     }
 }
 
-fn spawn_watchdog(path: &Path, original: &[u8]) -> Result<Watchdog> {
+fn spawn_watchdog(path: &Path) -> Result<Watchdog> {
     let exe = std::env::current_exe().context("locating own executable")?;
     let mut cmd = Command::new(exe);
     cmd.arg("__watchdog")
@@ -312,18 +276,12 @@ fn spawn_watchdog(path: &Path, original: &[u8]) -> Result<Watchdog> {
         });
     }
     let mut child = cmd.spawn().context("starting watchdog")?;
-    let mut stdin = child.stdin.take().unwrap();
+    let stdin = child.stdin.take().unwrap();
     let mut stdout = child.stdout.take().unwrap();
-    stdin.write_all(&(original.len() as u64).to_le_bytes())?;
-    stdin.write_all(original)?;
-    stdin.flush()?;
     let mut ack = [0u8; 1];
-    if stdout.read_exact(&mut ack).is_err() {
+    if stdout.read_exact(&mut ack).is_err() || &ack != b"R" {
         let _ = child.wait();
-        bail!("watchdog failed to start (see above); not mounting without crash recovery");
-    }
-    if &ack != b"R" {
-        bail!("watchdog sent unexpected ack");
+        bail!("watchdog failed to start; not mounting without crash recovery");
     }
     Ok(Watchdog {
         stdin: Some(stdin),
@@ -331,136 +289,35 @@ fn spawn_watchdog(path: &Path, original: &[u8]) -> Result<Watchdog> {
     })
 }
 
-fn socket_path(path: &Path) -> Result<PathBuf> {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut h);
-    Ok(audit::runtime_dir()?.join(format!("restore-{:016x}.sock", h.finish())))
-}
-
-/// The watchdog. It holds a copy of the original bytes and does nothing
-/// until the daemon's end of the pipe closes. If that happens without the
-/// daemon saying goodbye, the daemon died: detach the mount so the path stops
-/// returning ENOTCONN, then wait for `env-ghost restore`.
+/// The watchdog does nothing until the daemon's end of the pipe closes. If
+/// that happens without the daemon saying goodbye, the daemon died, and the
+/// kernel answers every access to the dead mount with ENOTCONN. Detaching it
+/// puts the original file back in view.
 pub fn watchdog_main(path: &Path) -> Result<()> {
     set_non_dumpable()?;
     let mut stdin = std::io::stdin().lock();
-    let mut len = [0u8; 8];
-    stdin.read_exact(&mut len)?;
-    let mut original = vec![0u8; u64::from_le_bytes(len) as usize];
-    stdin.read_exact(&mut original)?;
-
-    // Bind now, not after a crash. If restore can't work, the daemon must
-    // find out before it replaces the file with the stub.
-    let sock = socket_path(path)?;
-    audit::ensure_private_dir(sock.parent().unwrap())?;
-    let _ = fs::remove_file(&sock);
-    let listener = UnixListener::bind(&sock)
-        .with_context(|| format!("binding restore socket {}", sock.display()))?;
-
     std::io::stdout().write_all(b"R")?;
     std::io::stdout().flush()?;
 
     let mut msg = [0u8; 1];
     let n = stdin.read(&mut msg).unwrap_or(0);
     if n == 1 && &msg == b"C" {
-        let _ = fs::remove_file(&sock);
         return Ok(());
     }
-
-    let detached = if is_ghost_mount(path) {
-        lazy_unmount(path).map(|_| true)
-    } else {
-        Ok(false)
-    };
+    if !is_ghost_mount(path) {
+        return Ok(());
+    }
+    let res = lazy_unmount(path);
     let path_str = path.to_string_lossy().into_owned();
+    let note = match &res {
+        Ok(()) => "daemon died; mount detached".to_string(),
+        Err(e) => format!("daemon died; detach failed: {e:#}"),
+    };
     if let Ok(audit) = Audit::open(false) {
-        let note = match &detached {
-            Ok(true) => "daemon died; mount detached, stub exposed".to_string(),
-            Ok(false) => "daemon gone and not mounted; holding original for restore".to_string(),
-            Err(e) => format!("daemon died; detach failed: {e:#}"),
-        };
-        audit.record(&Event::new("watchdog", &path_str).note(note));
+        audit.record(&Event::new("watchdog", &path_str).note(note.clone()));
     }
-    match &detached {
-        Ok(_) => eprintln!(
-            "env-ghost: daemon for {} is gone; the path shows the stub. run: env-ghost restore {}",
-            path.display(),
-            path.display()
-        ),
-        Err(e) => eprintln!(
-            "env-ghost: daemon for {} died and detach failed: {e:#}",
-            path.display()
-        ),
-    }
-
-    for conn in listener.incoming() {
-        let Ok(mut conn) = conn else { continue };
-        let mut req = String::new();
-        let _ = (&mut conn).take(64).read_to_string(&mut req);
-        let force = req.trim() == "restore --force";
-        let current = fs::read(path).unwrap_or_default();
-        if !force && !current.starts_with(STUB_PREFIX.as_bytes()) {
-            let _ = conn.write_all(
-                b"refused: the file no longer holds the env-ghost stub. use --force to overwrite\n",
-            );
-            continue;
-        }
-        if is_ghost_mount(path) {
-            let _ = conn.write_all(b"refused: still mounted\n");
-            continue;
-        }
-        match write_in_place(path, &original) {
-            Ok(()) => {
-                let _ = conn.write_all(b"restored\n");
-                let _ = fs::remove_file(&sock);
-                if let Ok(audit) = Audit::open(false) {
-                    audit.record(
-                        &Event::new("restore", &path_str).note("original restored by request"),
-                    );
-                }
-                return Ok(());
-            }
-            Err(e) => {
-                let _ = conn.write_all(format!("failed: {e:#}\n").as_bytes());
-            }
-        }
-    }
-    Ok(())
-}
-
-pub fn restore(path: &Path, force: bool) -> Result<()> {
-    let path = fs::canonicalize(path).with_context(|| format!("resolving {}", path.display()))?;
-    if is_ghost_mount(&path) {
-        bail!("{} is mounted; env-ghost is still running", path.display());
-    }
-    let sock = socket_path(&path)?;
-    let mut conn = match UnixStream::connect(&sock) {
-        Ok(c) => c,
-        Err(_) => {
-            bail!(
-                "no watchdog is holding {}. if the daemon was stopped cleanly the file \
-                 is already restored; if the machine rebooted, the copy is gone",
-                path.display()
-            );
-        }
-    };
-    let req: &[u8] = if force {
-        b"restore --force"
-    } else {
-        b"restore"
-    };
-    conn.write_all(req)?;
-    conn.shutdown(std::net::Shutdown::Write)?;
-    let mut resp = String::new();
-    conn.read_to_string(&mut resp)?;
-    let resp = resp.trim();
-    if resp == "restored" {
-        println!("restored {}", path.display());
-        Ok(())
-    } else {
-        bail!("{resp}")
-    }
+    eprintln!("env-ghost: {note}: {}", path.display());
+    res
 }
 
 #[cfg(test)]

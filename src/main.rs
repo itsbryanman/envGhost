@@ -59,13 +59,6 @@ enum Cmd {
         #[arg(long)]
         policy: Option<PathBuf>,
     },
-    /// Put the original file back after the daemon died.
-    Restore {
-        file: PathBuf,
-        /// Overwrite even if the file no longer holds the stub.
-        #[arg(long)]
-        force: bool,
-    },
     #[command(name = "__watchdog", hide = true)]
     Watchdog { file: PathBuf },
 }
@@ -165,7 +158,6 @@ fn run(cli: Cli) -> Result<bool> {
             println!("policy: {desc}");
             println!("view: {} (rule: {})", d.view.as_str(), d.rule);
         }
-        Cmd::Restore { file, force } => daemon::restore(&file, force)?,
         Cmd::Watchdog { file } => daemon::watchdog_main(&file)?,
     }
     Ok(true)

@@ -59,13 +59,6 @@ pub fn state_dir() -> Result<PathBuf> {
     }
 }
 
-pub fn runtime_dir() -> Result<PathBuf> {
-    match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
-        Some(d) => Ok(PathBuf::from(d).join("env-ghost")),
-        None => Ok(state_dir()?.join("run")),
-    }
-}
-
 pub fn ensure_private_dir(dir: &Path) -> Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
