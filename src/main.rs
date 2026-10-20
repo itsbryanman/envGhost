@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 
 use env_ghost::fs::Mode;
 use env_ghost::policy::Policy;
-use env_ghost::{audit, caller, daemon};
+use env_ghost::{audit, caller, daemon, doctor};
 
 #[derive(Parser)]
 #[command(name = "env-ghost", version, about = "Caller-aware secrets filesystem for Linux")]
@@ -47,6 +47,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Check what this host supports.
+    Doctor,
     /// Show how a running process would be identified and what it would get.
     Explain {
         pid: i32,
@@ -148,6 +150,7 @@ fn run(cli: Cli) -> Result<bool> {
             lines,
             json,
         } => audit::tail(lines, follow, json)?,
+        Cmd::Doctor => return Ok(doctor::run()),
         Cmd::Explain { pid, policy } => {
             let (policy, desc) = load_policy(policy.as_deref())?;
             let c = caller::resolve(pid as u32)
