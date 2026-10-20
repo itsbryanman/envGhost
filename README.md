@@ -8,7 +8,7 @@ Caller-aware secrets filesystem for Linux.
 [![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/itsbryanman/envGhost?style=flat-square&label=openssf%20scorecard)](https://securityscorecards.dev/viewer/?uri=github.com/itsbryanman/envGhost)
 [![Platform](https://img.shields.io/badge/platform-Linux-informational?style=flat-square)](docs/design.md)
 [![FUSE](https://img.shields.io/badge/FUSE-3-informational?style=flat-square)](docs/design.md)
-[![Tested kernels](https://img.shields.io/badge/tested%20on-Linux%206.12%20%7C%206.17-informational?style=flat-square)](docs/harness-results.md)
+[![Tested kernels](https://img.shields.io/badge/tested%20on-Linux%206.12%20%7C%206.17%20%7C%207.0-informational?style=flat-square)](docs/harness-results.md)
 [![Code size](https://img.shields.io/github/languages/code-size/itsbryanman/envGhost?style=flat-square)](https://github.com/itsbryanman/envGhost)
 [![Top language](https://img.shields.io/github/languages/top/itsbryanman/envGhost?style=flat-square)](https://github.com/itsbryanman/envGhost)
 [![Last commit](https://img.shields.io/github/last-commit/itsbryanman/envGhost?style=flat-square)](https://github.com/itsbryanman/envGhost/commits/main)
