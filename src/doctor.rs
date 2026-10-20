@@ -68,6 +68,12 @@ pub fn run() -> bool {
     }
     println!();
     println!("kernel     {kernel}");
+    if fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope").is_ok_and(|v| v.trim() == "0") {
+        println!(
+            "warning: ptrace_scope is 0, so any process of this user can read the memory of \
+             processes that were given the real file. sysctl kernel.yama.ptrace_scope=1 narrows that"
+        );
+    }
     if blockers.is_empty() {
         println!(
             "watch and guard can run here (unprivileged mode: same-UID processes are not isolated)"
