@@ -1,24 +1,29 @@
-# Record with: vhs docs/demo.tape
+# Record with: docs/demo-setup.sh && vhs docs/demo.tape
 Output docs/demo.gif
 
-Set FontSize 16
-Set Width 1100
-Set Height 600
 Set Shell bash
+Set FontSize 19
+Set Width 960
+Set Height 640
+Set Padding 12
+Set Theme "Dracula"
+Set TypingSpeed 35ms
 
 Hide
-Type "cd $(mktemp -d) && printf 'STRIPE_KEY=sk_test_FAKEdemo000\nPORT=5432\n' > .env" Enter
+Type "/tmp/egdemo/start.sh" Enter
+Sleep 1s
 Show
 
-Type "env-ghost guard .env &" Enter
+Type "env-ghost guard -q .env &" Enter
 Sleep 1s
+Enter
+Sleep 400ms
 Type "cat .env" Enter
-Sleep 1s
-Type "stat -c '%s bytes' .env" Enter
-Sleep 1s
-Type "env-ghost log -n 3" Enter
 Sleep 2s
+Type "npm install   # bin/npm is a stub that runs cat .env" Enter
+Sleep 2.5s
 Type "kill %1" Enter
-Sleep 1s
-Type "cat .env" Enter
-Sleep 2s
+Sleep 1.5s
+
+Hide
+Type "tmux -L egdemo kill-server" Enter
