@@ -23,7 +23,6 @@ run_as=()
 if [ "$(id -u)" = 0 ]; then
     user=${HARNESS_USER:-nobody}
     run_as=(setpriv --reuid="$user" --regid="$(id -g "$user")" --clear-groups)
-    chown -R "$user" "$work"
 fi
 
 # Clean environment for everything we launch: inherited agent or npm
@@ -40,9 +39,10 @@ STRIPE_KEY=$secret
 PORT=5432
 "
 
+# Written as the test user. When the harness runs as root, the work dir
+# belongs to that user, and root writing into it could be redirected.
 reset_file() {
-    printf '%s' "$original" > "$file"
-    [ ${#run_as[@]} -eq 0 ] || chown "${HARNESS_USER:-nobody}" "$file"
+    as_user sh -c 'printf "%s" "$1" > "$2"' _ "$original" "$file"
 }
 
 cgroup=$(as_user cat /proc/self/cgroup | sed -n 's/^0:://p')
@@ -70,6 +70,8 @@ cgroup = \"$cgroup\"
 "
 printf '%s' "$base_policy" > "$work/base.toml"
 printf '%s' "$cgroup_policy" > "$work/cgroup.toml"
+# Root-written files exist before the directory changes hands.
+[ ${#run_as[@]} -eq 0 ] || chown -R "$user" "$work"
 
 : > "$out.raw"
 
