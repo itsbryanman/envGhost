@@ -166,8 +166,9 @@ impl Policy {
                 rule: "default".into(),
             });
         // Builtins only ever tighten. A user rule that already says canary
-        // stays canary.
-        if d.view < View::Redacted {
+        // stays canary. At redacted they change nothing but still name
+        // themselves, since the log should say an agent was detected.
+        if d.view <= View::Redacted {
             if self.package_install && is_package_install(c) {
                 d = Decision {
                     view: View::Redacted,
