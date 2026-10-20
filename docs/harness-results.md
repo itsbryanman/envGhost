@@ -9,7 +9,7 @@ edit by hand; rerun the harness instead.
 | kernel | 6.12.101+deb13-amd64 |
 | yama ptrace_scope | 0 |
 | ran as | nobody |
-| commit | 2239c05 |
+| commit | 43cbd49 |
 | date | 2026-10-20 |
 
 HELD means the attack did not get the real secret (or, for the crash test,
@@ -27,7 +27,7 @@ could not be attempted in this mode.
 | read /proc/&lt;pid>/mem of the env-ghost daemon | HELD | maps: Permission denied (os error 13); daemon is non-dumpable (ptrace_scope=0) |
 | read /proc/&lt;pid>/mem of a trusted process that read the file | BYPASSED | secret found (ptrace_scope=0); out of scope for a file-level control |
 | read /proc/&lt;pid>/environ of a child the trusted process launched with the secret | BYPASSED | environ needs only PTRACE_MODE_READ, which yama does not restrict |
-| SIGKILL the daemon during a read loop, keep reading | BYPASSED | 1149 reads failed with ENOTCONN/ECONNABORTED, last one 1.3 ms after the kill; then 2026681 reads returned the plain file underneath; 0 other errors; still mounted: false |
+| SIGKILL the daemon during a read loop, keep reading | BYPASSED | 1122 reads failed with ENOTCONN/ECONNABORTED, last one 1.2 ms after the kill; then 2050373 reads returned the plain file underneath; 0 other errors; still mounted: false |
 | fusermount3 -u as the same user, then read | BYPASSED | fusermount3 -u succeeded; file now reads as real. the plaintext sits under the mount in this mode |
 
 4 held, 7 bypassed, 0 not applicable.
