@@ -121,20 +121,22 @@ pub fn run(path: &Path, opts: Options) -> Result<()> {
         let path = path.clone();
         let audit = audit.clone();
         std::thread::spawn(move || {
-            let sig = wait_signal(&sigs);
-            SHUTTING_DOWN.store(true, Ordering::SeqCst);
-            let code = match shutdown(&path, &original, &audit, sig) {
-                Ok(()) => {
-                    watchdog.clean();
-                    0
+            loop {
+                let sig = wait_signal(&sigs);
+                SHUTTING_DOWN.store(true, Ordering::SeqCst);
+                match shutdown(&path, &original, &audit, sig) {
+                    Ok(()) => {
+                        watchdog.clean();
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        // Exiting now would leave a dead mount behind. Keep
+                        // serving and let the user try again.
+                        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+                        eprintln!("env-ghost: shutdown failed, still running: {e:#}");
+                    }
                 }
-                Err(e) => {
-                    // Leave the watchdog holding the bytes so restore works.
-                    eprintln!("env-ghost: {e:#}");
-                    1
-                }
-            };
-            std::process::exit(code);
+            }
         });
     }
 
@@ -299,6 +301,11 @@ fn spawn_watchdog(path: &Path, original: &[u8]) -> Result<Watchdog> {
             // Own session: a Ctrl-C or SIGHUP aimed at the daemon's terminal
             // must not take the watchdog down with it.
             libc::setsid();
+            // The signal mask survives exec, and the daemon has SIGTERM
+            // blocked for its sigwait thread.
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::pthread_sigmask(libc::SIG_SETMASK, &set, std::ptr::null_mut());
             Ok(())
         });
     }
