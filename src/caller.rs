@@ -65,6 +65,10 @@ pub struct Caller {
     /// Parents from nearest to farthest, ending at the session root or pid 1.
     pub ancestry: Vec<ProcInfo>,
     pub session_root: Option<SessionRoot>,
+    /// The caller's cgroup accepts processes from this user. systemd delegates
+    /// user@UID.service to the user, so a process there could have moved
+    /// itself in. Session scopes stay root-owned.
+    pub cgroup_user_movable: bool,
     /// Walk hit pid 1 without passing a session root. Common for daemons and
     /// anything started via nohup or setsid, so this is a fact, not a verdict.
     pub reached_init: bool,
@@ -152,6 +156,7 @@ pub fn resolve(tid: u32) -> Result<Caller, ResolveError> {
     }
 
     let env_hints = read_env_hints(tgid);
+    let cgroup_user_movable = proc.cgroup.as_deref().is_none_or(cgroup_user_movable);
 
     // Everything above was read by pid. If the process exited and the pid was
     // recycled while we were reading, the start time changes or the pidfd
@@ -175,6 +180,7 @@ pub fn resolve(tid: u32) -> Result<Caller, ResolveError> {
         proc,
         ancestry,
         session_root,
+        cgroup_user_movable,
         reached_init,
         env_hints,
     })
@@ -272,6 +278,14 @@ pub fn parse_cgroup_v2(raw: &str) -> Option<String> {
     raw.lines()
         .find_map(|l| l.strip_prefix("0::"))
         .map(|p| p.to_string())
+}
+
+fn cgroup_user_movable(cgroup: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match fs::metadata(format!("/sys/fs/cgroup{cgroup}/cgroup.procs")) {
+        Ok(m) => m.uid() != 0 || m.mode() & 0o022 != 0,
+        Err(_) => true,
+    }
 }
 
 fn read_env_hints(pid: i32) -> Vec<String> {

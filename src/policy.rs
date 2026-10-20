@@ -29,7 +29,7 @@ impl View {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Decision {
     pub view: View,
     pub rule: String,
@@ -143,35 +143,44 @@ impl Policy {
         })
     }
 
+    /// For callers that couldn't be pinned to a process.
+    pub fn decide_unidentified(&self) -> View {
+        self.unknown.max(View::Redacted)
+    }
+
     pub fn rule_count(&self) -> usize {
         self.rules.len()
     }
 
     pub fn decide(&self, c: &Caller) -> Decision {
-        if self.package_install && is_package_install(c) {
-            return Decision {
-                view: View::Redacted,
-                rule: "builtin:package-install".into(),
-            };
-        }
-        if self.ai_agent && is_ai_agent(c) {
-            return Decision {
-                view: View::Redacted,
-                rule: "builtin:ai-agent".into(),
-            };
-        }
-        for r in &self.rules {
-            if r.matches(c) {
-                return Decision {
-                    view: r.view,
-                    rule: r.name.clone(),
+        let mut d = self
+            .rules
+            .iter()
+            .find(|r| r.matches(c))
+            .map(|r| Decision {
+                view: r.view,
+                rule: r.name.clone(),
+            })
+            .unwrap_or_else(|| Decision {
+                view: self.unknown,
+                rule: "default".into(),
+            });
+        // Builtins only ever tighten. A user rule that already says canary
+        // stays canary.
+        if d.view < View::Redacted {
+            if self.package_install && is_package_install(c) {
+                d = Decision {
+                    view: View::Redacted,
+                    rule: "builtin:package-install".into(),
+                };
+            } else if self.ai_agent && is_ai_agent(c) {
+                d = Decision {
+                    view: View::Redacted,
+                    rule: "builtin:ai-agent".into(),
                 };
             }
         }
-        Decision {
-            view: self.unknown,
-            rule: "default".into(),
-        }
+        d
     }
 }
 
@@ -261,6 +270,18 @@ impl Rule {
                 .any(|a| p.matches(&a.cmdline_untrusted.join(" ")))
         {
             return false;
+        }
+        if self.view == View::Real {
+            // Every matcher hit, but real also needs one the caller couldn't
+            // have arranged. A cgroup the user can move processes into doesn't
+            // count.
+            let strong = self.exe.is_some()
+                || self.ancestor_exe.is_some()
+                || matches!(self.session_root, Some(k) if k != SessionKind::VscodeServer)
+                || (self.cgroup.is_some() && !c.cgroup_user_movable);
+            if !strong {
+                return false;
+            }
         }
         true
     }
@@ -441,6 +462,7 @@ mod tests {
             proc: p,
             ancestry,
             session_root: None,
+            cgroup_user_movable: false,
             reached_init: false,
             env_hints: Vec::new(),
         }
@@ -576,7 +598,7 @@ mod tests {
 
     #[test]
     fn cargo_build_script_and_rustc() {
-        let p = Policy::default();
+        let p = Policy::parse("[[rule]]\nview = \"real\"\nexe = \"/home/u/**\"\n").unwrap();
         let bs = proc(
             10,
             "/home/u/proj/target/debug/build/foo-1234/build-script-build",
@@ -589,6 +611,8 @@ mod tests {
             p.decide(&caller(rustc, vec![])).rule,
             "builtin:package-install"
         );
+        let app = proc(10, "/home/u/proj/target/debug/app", &["app"], CG);
+        assert_eq!(p.decide(&caller(app, vec![])).view, View::Real);
     }
 
     #[test]
@@ -600,15 +624,36 @@ mod tests {
             view = "real"
             exe = "/usr/bin/cat"
         "#;
+        let allow_cat = Policy::parse("[[rule]]\nview = \"real\"\nexe = \"/usr/bin/cat\"\n").unwrap();
         let agent = proc(9, "/home/u/.local/bin/claude", &["claude"], CG);
         let cat = proc(10, "/usr/bin/cat", &["cat", ".env"], CG);
         let c = caller(cat, vec![agent]);
-        assert_eq!(Policy::default().decide(&c).rule, "builtin:ai-agent");
+        assert_eq!(allow_cat.decide(&c).rule, "builtin:ai-agent");
         assert_eq!(Policy::parse(pol).unwrap().decide(&c).view, View::Real);
 
         let mut c = caller(proc(10, "/usr/bin/cat", &["cat"], CG), vec![]);
         c.env_hints = vec!["CLAUDECODE=1".into()];
-        assert_eq!(Policy::default().decide(&c).rule, "builtin:ai-agent");
+        assert_eq!(allow_cat.decide(&c).rule, "builtin:ai-agent");
+    }
+
+    #[test]
+    fn user_movable_cgroup_cannot_grant_real_alone() {
+        let pol = "[[rule]]\nview = \"real\"\ncgroup = \"/user.slice/*\"\n";
+        let p = Policy::parse(pol).unwrap();
+        let mut c = caller(proc(10, "/usr/bin/cat", &["cat"], CG), vec![]);
+        assert_eq!(p.decide(&c).view, View::Real);
+        c.cgroup_user_movable = true;
+        assert_eq!(p.decide(&c).view, View::Redacted);
+        // Paired with exe it's a narrowing, which is fine.
+        let pol = "[[rule]]\nview = \"real\"\nexe = \"/usr/bin/cat\"\ncgroup = \"/user.slice/*\"\n";
+        assert_eq!(Policy::parse(pol).unwrap().decide(&c).view, View::Real);
+    }
+
+    #[test]
+    fn builtin_does_not_loosen_canary() {
+        let p = Policy::parse("[[rule]]\nview = \"canary\"\ncmdline = \"npm*\"\n").unwrap();
+        let c = caller(proc(10, "/usr/bin/node", &["npm", "install"], CG), vec![]);
+        assert_eq!(p.decide(&c).view, View::Canary);
     }
 
     #[test]
