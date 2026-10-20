@@ -45,10 +45,23 @@ pub struct Value {
 /// Dotenv has no single grammar, so this fails closed wherever dialects
 /// disagree. Comment bodies are masked (people comment out old keys). An
 /// unquoted value runs to end of line, since docker env files have no inline
-/// comments. A lone CR ends a line for some parsers and not others, so a key
-/// right after one is masked too.
+/// comments. A lone CR ends a line for some parsers and not others, so
+/// everything after one is masked.
 /// Lines that are not KEY=VALUE are masked whole.
 pub fn dotenv_values(src: &[u8]) -> Vec<Value> {
+    // Past a lone CR, LF-only parsers and CR-aware parsers disagree about
+    // where every following line starts, even inside quotes. Parse what comes
+    // before it and mask the rest.
+    let lone_cr = (0..src.len()).find(|&i| src[i] == b'\r' && src.get(i + 1) != Some(&b'\n'));
+    if let Some(c) = lone_cr {
+        let mut out = parse(&src[..c]);
+        mask_to_eof(src, &mut out, c + 1);
+        return out;
+    }
+    parse(src)
+}
+
+fn parse(src: &[u8]) -> Vec<Value> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < src.len() {
@@ -60,9 +73,6 @@ pub fn dotenv_values(src: &[u8]) -> Vec<Value> {
             i = next_line(src, line_end);
             continue;
         }
-        // An LF-only parser sees this line as the tail of the previous value,
-        // so its key bytes are value bytes there. Mask all of it.
-        let after_cr = i > 0 && src[i - 1] == b'\r';
         if body[0] == b'#' {
             push_opaque(src, &mut out, i + lead + 1, line_end);
             i = next_line(src, line_end);
@@ -70,9 +80,6 @@ pub fn dotenv_values(src: &[u8]) -> Vec<Value> {
         }
         match parse_assignment(src, i + lead, line_end) {
             Some((key, vstart)) => {
-                if after_cr {
-                    push_opaque(src, &mut out, i + lead, vstart);
-                }
                 i = push_value(src, &mut out, Some(key), vstart, line_end);
             }
             None => i = push_opaque_line(src, &mut out, i + lead, line_end),
@@ -96,9 +103,9 @@ fn next_line(src: &[u8], line_end: usize) -> usize {
     }
 }
 
-/// Mask a line we don't understand. If it opens a quote it doesn't close, a
-/// parser that does understand it would keep reading, so mask through the
-/// closing quote too. Returns the offset of the next line.
+/// Mask a line we don't understand. If it has a quote that doesn't close on
+/// the same line, some parser may read on from there, so mask to the end of
+/// the file. Returns the offset of the next line.
 fn push_opaque_line(src: &[u8], out: &mut Vec<Value>, start: usize, line_end: usize) -> usize {
     let mut p = start;
     while p < line_end {
@@ -106,14 +113,8 @@ fn push_opaque_line(src: &[u8], out: &mut Vec<Value>, start: usize, line_end: us
         if matches!(q, b'"' | b'\'' | b'`') {
             match closing_quote(src, q, p + 1) {
                 Some(c) if c < line_end => p = c + 1,
-                Some(c) => {
-                    split_on_newlines(out, &None, src, start, c + 1);
-                    let end = find_line_end(src, c);
-                    push_opaque(src, out, c + 1, end);
-                    return next_line(src, end);
-                }
-                None => {
-                    split_on_newlines(out, &None, src, start, src.len());
+                _ => {
+                    mask_to_eof(src, out, start);
                     return src.len();
                 }
             }
@@ -123,6 +124,10 @@ fn push_opaque_line(src: &[u8], out: &mut Vec<Value>, start: usize, line_end: us
     }
     push_opaque(src, out, start, line_end);
     next_line(src, line_end)
+}
+
+fn mask_to_eof(src: &[u8], out: &mut Vec<Value>, start: usize) {
+    split_on_newlines(out, &None, src, start, src.len());
 }
 
 fn closing_quote(src: &[u8], q: u8, from: usize) -> Option<usize> {
@@ -436,7 +441,13 @@ DB_URL=postgres://u:p@h:5432/db\r
         let s = b"# note\rSECRET=hunter2\r\nB=1\rC=2";
         let r = redact(s);
         assert_eq!(r.len(), s.len());
-        assert_eq!(&r[..], b"# xxxx\rxxxxxxxxxxxxxx\r\nB=0\rxx0");
+        assert_eq!(&r[..], b"# xxxx\rxxxxxxxxxxxxxx\r\nxxx\rxxx");
+    }
+
+    #[test]
+    fn lone_cr_inside_quotes() {
+        let s = b"A=\"s\ry\"\nKEY=1\n";
+        assert_eq!(&redact(s)[..], b"A=\"x\rxx\nxxxxx\n");
     }
 
     #[test]
@@ -444,7 +455,9 @@ DB_URL=postgres://u:p@h:5432/db\r
         let s = b"A=1\rB=\"one\nKEY=two\"\njunk 'x\nNEXT=y'\nOK=1\n";
         let r = redact(s);
         assert_eq!(r.len(), s.len());
-        assert_eq!(&r[..], b"A=0\rxx\"xxx\nxxxxxxx\"\nxxxxxxx\nxxxxxxx\nOK=0\n");
+        assert_eq!(&r[..], b"A=0\rxxxxxx\nxxxxxxxx\nxxxxxxx\nxxxxxxx\nxxxx\n");
+        let s = b"OK=1\njunk 'x\nNEXT=y'\nB=2\n";
+        assert_eq!(&redact(s)[..], b"OK=0\nxxxxxxx\nxxxxxxx\nxxx\n");
     }
 
     #[test]
