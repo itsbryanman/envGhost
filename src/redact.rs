@@ -39,38 +39,70 @@ pub struct Value {
     pub span: Range<usize>,
 }
 
-/// Find every value in a dotenv file. Spans cover value bytes only: no key,
-/// no quotes, no inline comment, no trailing whitespace. Lines that are not
-/// comments and not KEY=VALUE are treated as one opaque value so nothing
-/// unrecognized leaks through. Newlines are never inside a span.
+/// Find every byte range a view must replace. Spans cover value bytes: no
+/// key, no quotes, no trailing whitespace, never a line terminator.
+///
+/// Dotenv has no single grammar, so this fails closed wherever dialects
+/// disagree. Comment bodies are masked (people comment out old keys). An
+/// unquoted value runs to end of line, since docker env files have no inline
+/// comments. A lone CR ends a line, since some parsers treat it that way.
+/// Lines that are not KEY=VALUE are masked whole.
 pub fn dotenv_values(src: &[u8]) -> Vec<Value> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < src.len() {
-        let line_end = memchr(b'\n', &src[i..]).map_or(src.len(), |n| i + n);
+        let line_end = find_line_end(src, i);
         let line = &src[i..line_end];
         let lead = line.iter().take_while(|b| is_blank(**b)).count();
         let body = &line[lead..];
-        if body.is_empty() || body[0] == b'#' {
-            i = line_end + 1;
+        if body.is_empty() {
+            i = next_line(src, line_end);
+            continue;
+        }
+        if body[0] == b'#' {
+            push_opaque(src, &mut out, i + lead + 1, line_end);
+            i = next_line(src, line_end);
             continue;
         }
         match parse_assignment(src, i + lead, line_end) {
             Some((key, vstart)) => {
-                let next = push_value(src, &mut out, Some(key), vstart, line_end);
-                i = next;
+                i = push_value(src, &mut out, Some(key), vstart, line_end);
             }
             None => {
-                let end = trim_end(src, i + lead, line_end);
-                out.push(Value {
-                    key: None,
-                    span: i + lead..end,
-                });
-                i = line_end + 1;
+                push_opaque(src, &mut out, i + lead, line_end);
+                i = next_line(src, line_end);
             }
         }
     }
     out
+}
+
+fn find_line_end(src: &[u8], from: usize) -> usize {
+    src[from..]
+        .iter()
+        .position(|b| *b == b'\n' || *b == b'\r')
+        .map_or(src.len(), |n| from + n)
+}
+
+fn next_line(src: &[u8], line_end: usize) -> usize {
+    if src.get(line_end) == Some(&b'\r') && src.get(line_end + 1) == Some(&b'\n') {
+        line_end + 2
+    } else {
+        line_end + 1
+    }
+}
+
+fn push_opaque(src: &[u8], out: &mut Vec<Value>, mut start: usize, end: usize) {
+    while start < end && is_blank(src[start]) {
+        start += 1;
+    }
+    let end = trim_end(src, start, end);
+    if start < end {
+        out.push(Value {
+            key: None,
+            span: start..end,
+        });
+    }
 }
 
 /// Returns the key and the offset where the value starts.
@@ -115,7 +147,7 @@ fn push_value(
     line_end: usize,
 ) -> usize {
     if vstart >= line_end {
-        return line_end + 1;
+        return next_line(src, line_end);
     }
     let q = src[vstart];
     if matches!(q, b'"' | b'\'' | b'`') {
@@ -137,21 +169,10 @@ fn push_value(
         match close {
             Some(c) => {
                 split_on_newlines(out, &key, src, vstart + 1, c);
-                let end = memchr(b'\n', &src[c..]).map_or(src.len(), |n| c + n);
-                // Anything after the closing quote other than a comment is
-                // not something we understand, so it gets masked too.
-                let mut t = c + 1;
-                while t < end && is_blank(src[t]) {
-                    t += 1;
-                }
-                let tail_end = trim_end(src, t, end);
-                if t < tail_end && src[t] != b'#' {
-                    out.push(Value {
-                        key: key.clone(),
-                        span: t..tail_end,
-                    });
-                }
-                end + 1
+                // Whatever follows the closing quote, comment or not, is masked.
+                let end = find_line_end(src, c);
+                push_opaque(src, out, c + 1, end);
+                next_line(src, end)
             }
             None => {
                 // Unterminated quote: mask the rest of the file.
@@ -160,22 +181,14 @@ fn push_value(
             }
         }
     } else {
-        let mut end = line_end;
-        // An unquoted value ends at " #".
-        for p in vstart..line_end {
-            if src[p] == b'#' && p > vstart && is_blank(src[p - 1]) {
-                end = p;
-                break;
-            }
-        }
-        let end = trim_end(src, vstart, end);
+        let end = trim_end(src, vstart, line_end);
         if end > vstart {
             out.push(Value {
                 key,
                 span: vstart..end,
             });
         }
-        line_end + 1
+        next_line(src, line_end)
     }
 }
 
@@ -188,7 +201,7 @@ fn split_on_newlines(
 ) {
     let mut s = start;
     for p in start..end {
-        if src[p] == b'\n' {
+        if src[p] == b'\n' || src[p] == b'\r' {
             if p > s {
                 out.push(Value {
                     key: key.clone(),
@@ -215,10 +228,6 @@ fn trim_end(src: &[u8], start: usize, mut end: usize) -> usize {
 
 fn is_blank(b: u8) -> bool {
     b == b' ' || b == b'\t'
-}
-
-fn memchr(needle: u8, hay: &[u8]) -> Option<usize> {
-    hay.iter().position(|b| *b == needle)
 }
 
 fn prefix_len(value: &[u8]) -> usize {
@@ -326,7 +335,7 @@ DB_URL=postgres://u:p@h:5432/db\r
         assert_eq!(val(s, "PORT"), ["5432"]);
         assert!(val(s, "EMPTY").is_empty());
         assert_eq!(val(s, "QUOTED"), ["pa ss#word"]);
-        assert_eq!(val(s, "INLINE"), ["abc"]);
+        assert_eq!(val(s, "INLINE"), ["abc # comment here"]);
         assert_eq!(val(s, "MULTI"), ["line one", "line two"]);
         assert_eq!(val(s, "DB_URL"), ["postgres://u:p@h:5432/db"]);
         let opaque: Vec<_> = dotenv_values(s)
@@ -334,7 +343,15 @@ DB_URL=postgres://u:p@h:5432/db\r
             .filter(|v| v.key.is_none())
             .map(|v| std::str::from_utf8(&s[v.span]).unwrap().to_string())
             .collect();
-        assert_eq!(opaque, ["garbage line with no equals"]);
+        assert_eq!(
+            opaque,
+            [
+                "stripe",
+                "# trailing comment",
+                "'s'",
+                "garbage line with no equals"
+            ]
+        );
     }
 
     #[test]
@@ -347,10 +364,10 @@ DB_URL=postgres://u:p@h:5432/db\r
         assert!(r.contains("export GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxx\n"));
         assert!(r.contains("AWS_ACCESS_KEY_ID = AKIAxxxxxxxxxxxxxxxx\n"));
         assert!(r.contains("PORT=0000\n"));
-        assert!(r.contains("QUOTED=\"xxxxxxxxxx\" # trailing comment\n"));
-        assert!(r.contains("INLINE=xxx # comment here\n"));
+        assert!(r.contains("QUOTED=\"xxxxxxxxxx\" xxxxxxxxxxxxxxxxxx\n"));
+        assert!(r.contains("INLINE=xxxxxxxxxxxxxxxxxx\n"));
         assert!(r.contains("MULTI=\"xxxxxxxx\nxxxxxxxx\"\n"));
-        assert!(r.contains("# stripe\n"));
+        assert!(r.starts_with("# xxxxxx\n"));
         assert!(r.contains("SINGLE='xx'xxx\n"));
         assert!(!r.contains("garbage"));
         assert!(r.contains("DB_URL=xxxxxxxxxxxxxxxxxxxxxxxx\r\n"));
@@ -378,6 +395,20 @@ DB_URL=postgres://u:p@h:5432/db\r
         assert_eq!(r.len(), s.len());
         assert_eq!(&r[..5], b"A=xx\n");
         assert!(!r.windows(5).any(|w| w == b"still"));
+    }
+
+    #[test]
+    fn lone_cr_ends_a_line() {
+        let s = b"# note\rSECRET=hunter2\r\nB=1\rC=2";
+        let r = redact(s);
+        assert_eq!(r.len(), s.len());
+        assert_eq!(&r[..], b"# xxxx\rSECRET=xxxxxxx\r\nB=0\rC=0");
+    }
+
+    #[test]
+    fn commented_out_keys_are_masked() {
+        let r = redact(b"#OLD=sk_test_abcdef\n  # KEY=ghp_123\n");
+        assert_eq!(&r[..], b"#xxxxxxxxxxxxxxxxxx\n  # xxxxxxxxxxx\n");
     }
 
     #[test]
