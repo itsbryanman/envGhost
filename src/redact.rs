@@ -45,8 +45,8 @@ pub struct Value {
 /// Dotenv has no single grammar, so this fails closed wherever dialects
 /// disagree. Comment bodies are masked (people comment out old keys). An
 /// unquoted value runs to end of line, since docker env files have no inline
-/// comments. A lone CR ends a line for some parsers and not others, so the
-/// text after one is masked whole.
+/// comments. A lone CR ends a line for some parsers and not others, so a key
+/// right after one is masked too.
 /// Lines that are not KEY=VALUE are masked whole.
 pub fn dotenv_values(src: &[u8]) -> Vec<Value> {
     let mut out = Vec::new();
@@ -62,11 +62,7 @@ pub fn dotenv_values(src: &[u8]) -> Vec<Value> {
         }
         // An LF-only parser sees this line as the tail of the previous value,
         // so its key bytes are value bytes there. Mask all of it.
-        if i > 0 && src[i - 1] == b'\r' {
-            push_opaque(src, &mut out, i + lead, line_end);
-            i = next_line(src, line_end);
-            continue;
-        }
+        let after_cr = i > 0 && src[i - 1] == b'\r';
         if body[0] == b'#' {
             push_opaque(src, &mut out, i + lead + 1, line_end);
             i = next_line(src, line_end);
@@ -74,12 +70,12 @@ pub fn dotenv_values(src: &[u8]) -> Vec<Value> {
         }
         match parse_assignment(src, i + lead, line_end) {
             Some((key, vstart)) => {
+                if after_cr {
+                    push_opaque(src, &mut out, i + lead, vstart);
+                }
                 i = push_value(src, &mut out, Some(key), vstart, line_end);
             }
-            None => {
-                push_opaque(src, &mut out, i + lead, line_end);
-                i = next_line(src, line_end);
-            }
+            None => i = push_opaque_line(src, &mut out, i + lead, line_end),
         }
     }
     out
@@ -98,6 +94,50 @@ fn next_line(src: &[u8], line_end: usize) -> usize {
     } else {
         line_end + 1
     }
+}
+
+/// Mask a line we don't understand. If it opens a quote it doesn't close, a
+/// parser that does understand it would keep reading, so mask through the
+/// closing quote too. Returns the offset of the next line.
+fn push_opaque_line(src: &[u8], out: &mut Vec<Value>, start: usize, line_end: usize) -> usize {
+    let mut p = start;
+    while p < line_end {
+        let q = src[p];
+        if matches!(q, b'"' | b'\'' | b'`') {
+            match closing_quote(src, q, p + 1) {
+                Some(c) if c < line_end => p = c + 1,
+                Some(c) => {
+                    split_on_newlines(out, &None, src, start, c + 1);
+                    let end = find_line_end(src, c);
+                    push_opaque(src, out, c + 1, end);
+                    return next_line(src, end);
+                }
+                None => {
+                    split_on_newlines(out, &None, src, start, src.len());
+                    return src.len();
+                }
+            }
+        } else {
+            p += 1;
+        }
+    }
+    push_opaque(src, out, start, line_end);
+    next_line(src, line_end)
+}
+
+fn closing_quote(src: &[u8], q: u8, from: usize) -> Option<usize> {
+    let mut p = from;
+    while p < src.len() {
+        if q == b'"' && src[p] == b'\\' {
+            p += 2;
+            continue;
+        }
+        if src[p] == q {
+            return Some(p);
+        }
+        p += 1;
+    }
+    None
 }
 
 fn push_opaque(src: &[u8], out: &mut Vec<Value>, mut start: usize, end: usize) {
@@ -159,22 +199,8 @@ fn push_value(
     }
     let q = src[vstart];
     if matches!(q, b'"' | b'\'' | b'`') {
-        // Quoted values may span lines. Find the closing quote; double quotes
-        // honour backslash escapes.
-        let mut p = vstart + 1;
-        let mut close = None;
-        while p < src.len() {
-            if q == b'"' && src[p] == b'\\' {
-                p += 2;
-                continue;
-            }
-            if src[p] == q {
-                close = Some(p);
-                break;
-            }
-            p += 1;
-        }
-        match close {
+        // Quoted values may span lines. Double quotes honour backslash escapes.
+        match closing_quote(src, q, vstart + 1) {
             Some(c) => {
                 split_on_newlines(out, &key, src, vstart + 1, c);
                 // Whatever follows the closing quote, comment or not, is masked.
@@ -410,7 +436,15 @@ DB_URL=postgres://u:p@h:5432/db\r
         let s = b"# note\rSECRET=hunter2\r\nB=1\rC=2";
         let r = redact(s);
         assert_eq!(r.len(), s.len());
-        assert_eq!(&r[..], b"# xxxx\rxxxxxxxxxxxxxx\r\nB=0\rxxx");
+        assert_eq!(&r[..], b"# xxxx\rxxxxxxxxxxxxxx\r\nB=0\rxx0");
+    }
+
+    #[test]
+    fn quote_opened_on_masked_line() {
+        let s = b"A=1\rB=\"one\nKEY=two\"\njunk 'x\nNEXT=y'\nOK=1\n";
+        let r = redact(s);
+        assert_eq!(r.len(), s.len());
+        assert_eq!(&r[..], b"A=0\rxx\"xxx\nxxxxxxx\"\nxxxxxxx\nxxxxxxx\nOK=0\n");
     }
 
     #[test]
