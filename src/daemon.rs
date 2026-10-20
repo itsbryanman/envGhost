@@ -186,7 +186,10 @@ fn set_non_dumpable() -> Result<()> {
     // Makes /proc/<pid>/mem, environ and ptrace attach root-only for this
     // process. The plaintext lives here, so this matters more than anywhere.
     if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
-        bail!("prctl(PR_SET_DUMPABLE): {}", std::io::Error::last_os_error());
+        bail!(
+            "prctl(PR_SET_DUMPABLE): {}",
+            std::io::Error::last_os_error()
+        );
     }
     Ok(())
 }
@@ -260,8 +263,7 @@ fn unescape_mountinfo(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'\\' && i + 3 < b.len() + 0 && b[i + 1..i + 4].iter().all(|c| c.is_ascii_digit())
-        {
+        if b[i] == b'\\' && i + 4 <= b.len() && b[i + 1..i + 4].iter().all(|c| c.is_ascii_digit()) {
             let v = u8::from_str_radix(&s[i + 1..i + 4], 8).unwrap_or(b'?');
             out.push(v);
             i += 4;
@@ -386,7 +388,10 @@ pub fn watchdog_main(path: &Path) -> Result<()> {
             path.display(),
             path.display()
         ),
-        Err(e) => eprintln!("env-ghost: daemon for {} died and detach failed: {e:#}", path.display()),
+        Err(e) => eprintln!(
+            "env-ghost: daemon for {} died and detach failed: {e:#}",
+            path.display()
+        ),
     }
 
     for conn in listener.incoming() {
@@ -410,7 +415,9 @@ pub fn watchdog_main(path: &Path) -> Result<()> {
                 let _ = conn.write_all(b"restored\n");
                 let _ = fs::remove_file(&sock);
                 if let Ok(audit) = Audit::open(false) {
-                    audit.record(&Event::new("restore", &path_str).note("original restored by request"));
+                    audit.record(
+                        &Event::new("restore", &path_str).note("original restored by request"),
+                    );
                 }
                 return Ok(());
             }
@@ -438,7 +445,11 @@ pub fn restore(path: &Path, force: bool) -> Result<()> {
             );
         }
     };
-    let req: &[u8] = if force { b"restore --force" } else { b"restore" };
+    let req: &[u8] = if force {
+        b"restore --force"
+    } else {
+        b"restore"
+    };
     conn.write_all(req)?;
     conn.shutdown(std::net::Shutdown::Write)?;
     let mut resp = String::new();
@@ -449,5 +460,17 @@ pub fn restore(path: &Path, force: bool) -> Result<()> {
         Ok(())
     } else {
         bail!("{resp}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mountinfo_escapes() {
+        assert_eq!(unescape_mountinfo("/home/a\\040b/.env"), "/home/a b/.env");
+        assert_eq!(unescape_mountinfo("/x/dir\\040"), "/x/dir ");
+        assert_eq!(unescape_mountinfo("/x\\04"), "/x\\04");
     }
 }
