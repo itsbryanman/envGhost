@@ -1,7 +1,8 @@
-//! Remove the mount with fusermount3 as the same user, read what's under it,
-//! then ask the watchdog to put the original back and read again.
+//! Remove the mount with fusermount3 as the same user and read what's under
+//! it. The plaintext was never moved, so in unprivileged mode this is
+//! expected to be a bypass.
 //!
-//! usage: atk-unmount <file> <secret> <env-ghost>
+//! usage: atk-unmount <file> <secret>
 
 use std::fs;
 use std::path::Path;
@@ -12,7 +13,7 @@ use env_ghost_harness::{Verdict, args, describe, has, mounted, report};
 
 fn main() {
     let a = args();
-    let (file, secret, env_ghost) = (&a[1], &a[2], &a[3]);
+    let (file, secret) = (&a[1], &a[2]);
     let out = Command::new("fusermount3").args(["-u", file]).output();
     let how = match out {
         Ok(o) if o.status.success() => "fusermount3 -u succeeded".to_string(),
@@ -29,12 +30,6 @@ fn main() {
             "fusermount3 -u as the same user, then read",
             &format!("{how}; still mounted"),
         );
-        report(
-            "fusermount-u-restore",
-            Verdict::NotApplicable,
-            "fusermount3 -u, then env-ghost restore, then read",
-            "mount could not be removed",
-        );
         return;
     }
     // Give the daemon a moment to notice and exit.
@@ -49,32 +44,8 @@ fn main() {
         },
         "fusermount3 -u as the same user, then read",
         &format!(
-            "{how}; file now reads as {}. protection is gone until restarted",
+            "{how}; file now reads as {}. the plaintext sits under the mount in this mode",
             describe(&under, secret)
-        ),
-    );
-
-    let r = Command::new(env_ghost)
-        .args(["restore", file])
-        .output()
-        .unwrap();
-    let after = fs::read(file).unwrap_or_default();
-    report(
-        "fusermount-u-restore",
-        if has(&after, secret) {
-            Verdict::Bypassed
-        } else {
-            Verdict::Held
-        },
-        "fusermount3 -u, then env-ghost restore, then read",
-        &format!(
-            "restore {}; file reads as {}. restore has no way to tell the user from an attacker",
-            if r.status.success() {
-                "succeeded"
-            } else {
-                "failed"
-            },
-            describe(&after, secret)
         ),
     );
 }

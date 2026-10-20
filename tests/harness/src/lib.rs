@@ -30,8 +30,6 @@ pub fn has(hay: &[u8], needle: &str) -> bool {
 pub fn describe(bytes: &[u8], secret: &str) -> &'static str {
     if has(bytes, secret) {
         "real"
-    } else if bytes.starts_with(b"# env-ghost is not running") {
-        "stub"
     } else {
         "not real"
     }

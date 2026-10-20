@@ -32,15 +32,12 @@ struct Scratch {
 impl Scratch {
     fn new(name: &str) -> Scratch {
         static N: AtomicU32 = AtomicU32::new(0);
-        // Short path under /tmp: the restore socket lives in here and unix
-        // socket paths max out at 108 bytes.
         let dir = PathBuf::from(format!(
             "/tmp/egt-{}-{}-{name}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join("run")).unwrap();
         fs::create_dir_all(dir.join("state")).unwrap();
         Scratch { dir }
     }
@@ -83,7 +80,6 @@ impl Daemon {
             .env_clear()
             .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
             .env("XDG_STATE_HOME", s.dir.join("state"))
-            .env("XDG_RUNTIME_DIR", s.dir.join("run"))
             .stdout(Stdio::null())
             .spawn()
             .unwrap();
@@ -115,21 +111,6 @@ impl Drop for Daemon {
         if self.child.try_wait().ok().flatten().is_none() {
             unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) };
             let _ = self.child.wait();
-        }
-        // A failed test may leave a watchdog waiting for restore, holding the
-        // test's stderr open. Let it finish.
-        let stub = fs::read(&self.path)
-            .map(|b| b.starts_with(b"# env-ghost is not running"))
-            .unwrap_or(false);
-        if stub {
-            let dir = self.path.parent().unwrap();
-            let _ = Command::new(env!("CARGO_BIN_EXE_env-ghost"))
-                .args(["restore", "--force"])
-                .arg(&self.path)
-                .env_clear()
-                .env("XDG_STATE_HOME", dir.join("state"))
-                .env("XDG_RUNTIME_DIR", dir.join("run"))
-                .output();
         }
     }
 }
@@ -300,7 +281,7 @@ fn st_size_is_identical_across_views() {
 }
 
 #[test]
-fn watch_serves_real_and_restores_byte_for_byte() {
+fn watch_serves_real_and_leaves_file_untouched() {
     if !fuse_ok() {
         return;
     }
@@ -346,7 +327,7 @@ fn writes_fail_cleanly() {
 }
 
 #[test]
-fn sigkill_during_read_loop_leaves_stub_not_enotconn() {
+fn sigkill_during_read_loop_brings_original_back() {
     if !fuse_ok() {
         return;
     }
@@ -358,15 +339,13 @@ fn sigkill_during_read_loop_leaves_stub_not_enotconn() {
 
     let reader_file = file.clone();
     let reader = std::thread::spawn(move || {
-        let mut enotconn = 0;
-        let mut stub_reads = 0;
-        let mut first_fail: Option<Instant> = None;
+        let (mut failed, mut redacted, mut plain) = (0, 0, 0);
         let mut last_fail: Option<Instant> = None;
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(3) {
             match fs::read(&reader_file) {
-                Ok(b) if b.starts_with(b"# env-ghost is not running") => stub_reads += 1,
-                Ok(b) => assert!(!b.windows(SECRET.len()).any(|w| w == SECRET.as_bytes())),
+                Ok(b) if b.windows(SECRET.len()).any(|w| w == SECRET.as_bytes()) => plain += 1,
+                Ok(_) => redacted += 1,
                 // In-flight requests are aborted with ECONNABORTED; new ones
                 // on the dead connection get ENOTCONN until the detach lands.
                 Err(e)
@@ -375,43 +354,25 @@ fn sigkill_during_read_loop_leaves_stub_not_enotconn() {
                         Some(libc::ENOTCONN) | Some(libc::ECONNABORTED)
                     ) =>
                 {
-                    enotconn += 1;
-                    first_fail.get_or_insert_with(Instant::now);
+                    failed += 1;
                     last_fail = Some(Instant::now());
                 }
                 Err(e) => panic!("unexpected error: {e}"),
             }
         }
-        let gap = match (first_fail, last_fail) {
-            (Some(a), Some(b)) => b - a,
-            _ => Duration::ZERO,
-        };
-        (enotconn, stub_reads, gap)
+        (failed, redacted, plain, last_fail)
     });
     std::thread::sleep(Duration::from_millis(300));
+    let killed = Instant::now();
     unsafe { libc::kill(pid, libc::SIGKILL) };
-    let (enotconn, stub_reads, gap) = reader.join().unwrap();
+    let (failed, redacted, plain, last_fail) = reader.join().unwrap();
     eprintln!(
-        "failed reads in the gap: {enotconn} over {:?}, stub reads after: {stub_reads}",
-        gap
+        "redacted reads {redacted}, failed reads {failed} (last {:?} after kill), plain reads after {plain}",
+        last_fail.map(|l| l - killed)
     );
-    assert!(stub_reads > 0, "path never showed the stub");
+    assert!(plain > 0, "path never came back");
     assert!(!mounted(&file));
-    assert!(
-        fs::read(&file)
-            .unwrap()
-            .starts_with(b"# env-ghost is not running")
-    );
-
-    let out = Command::new(env!("CARGO_BIN_EXE_env-ghost"))
-        .arg("restore")
-        .arg(&file)
-        .env_clear()
-        .env("XDG_STATE_HOME", s.dir.join("state"))
-        .env("XDG_RUNTIME_DIR", s.dir.join("run"))
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
+    // The original was never touched, so it's exactly what we started with.
     assert_eq!(fs::read(&file).unwrap(), original);
     drop(d);
 }

@@ -16,8 +16,7 @@ bin=$root/target/release
 
 work=$(mktemp -d /tmp/egh.XXXXXX)
 chmod 755 "$work"
-mkdir -p "$work/state" "$work/run" "$work/cfg"
-chmod 700 "$work/run"
+mkdir -p "$work/state" "$work/cfg"
 
 run_as=()
 if [ "$(id -u)" = 0 ]; then
@@ -29,7 +28,7 @@ fi
 # variables would change which builtin rules fire. Kept as an array rather
 # than a function so a backgrounded command's $! is the real pid.
 as_user=("${run_as[@]}" env -i PATH=/usr/local/bin:/usr/bin:/bin HOME="$work"
-    XDG_STATE_HOME="$work/state" XDG_RUNTIME_DIR="$work/run" XDG_CONFIG_HOME="$work/cfg")
+    XDG_STATE_HOME="$work/state" XDG_CONFIG_HOME="$work/cfg")
 as_user() { "${as_user[@]}" "$@"; }
 
 secret="sk_test_$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"
@@ -101,12 +100,10 @@ stop_daemon() {
         echo "still mounted after stop" >&2
         exit 1
     fi
-    # Anything a crashed run left waiting for restore.
-    if head -c 26 "$file" | grep -q '^# env-ghost is not running'; then
-        as_user "$bin/env-ghost" restore --force "$file" >/dev/null 2>&1 || true
-    fi
+    # env-ghost never writes to the file; whatever happened, it must be
+    # exactly what we put there.
     if [ "$(cat "$file")" != "$(printf '%s' "$original")" ]; then
-        echo "file not restored byte for byte" >&2
+        echo "file changed under the mount" >&2
         exit 1
     fi
 }
@@ -143,7 +140,7 @@ wait "$daemon_pid" 2>/dev/null || true
 stop_daemon
 
 start_daemon "$work/base.toml"
-attack "$bin/atk-unmount" "$file" "$secret" "$bin/env-ghost"
+attack "$bin/atk-unmount" "$file" "$secret"
 wait "$daemon_pid" 2>/dev/null || true
 stop_daemon
 
