@@ -48,6 +48,18 @@ pub fn run(path: &Path, opts: Options) -> Result<()> {
     eprintln!(
         "env-ghost: the plaintext stays on disk under the mount; any process of this user can unmount it"
     );
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.nlink() > 1 {
+            // The mount covers one path. Other hard links reach the same
+            // inode without going through us.
+            eprintln!(
+                "env-ghost: warning: {} has {} hard links; the others are not covered",
+                path.display(),
+                meta.nlink()
+            );
+        }
+    }
 
     // Block the signals we handle before any thread exists, so they all
     // inherit the mask and only the sigwait thread ever sees them.
