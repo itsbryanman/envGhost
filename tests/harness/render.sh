@@ -2,7 +2,20 @@
 # Turn run.sh output into the markdown matrix in docs/harness-results.md.
 #
 #   tests/harness/render.sh results.tsv > docs/harness-results.md
+#   tests/harness/render.sh --brief results.tsv    # short table for the README
 set -euo pipefail
+
+if [ "${1:-}" = --brief ]; then
+    in=${2:?usage: render.sh --brief results.tsv}
+    echo "| Attack | Result | Note |"
+    echo "|---|---|---|"
+    awk -F'\t' '$1 == "RESULT" {
+        attack = $4; b = $6
+        gsub(/</, "\\&lt;", attack); gsub(/\|/, "\\|", b)
+        printf "| %s | %s | %s |\n", attack, $3, b
+    }' "$in"
+    exit 0
+fi
 
 in=${1:?usage: render.sh results.tsv}
 

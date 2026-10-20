@@ -12,15 +12,54 @@ pub enum Verdict {
     NotApplicable,
 }
 
-/// One tab-separated line: id, verdict, attack, note.
+/// One tab-separated line: id, verdict, attack, note, brief. The brief is a
+/// one-line reading of this outcome for the README table.
 pub fn report(id: &str, verdict: Verdict, attack: &str, note: &str) {
+    let b = brief(id, &verdict);
     let v = match verdict {
         Verdict::Held => "HELD",
         Verdict::Bypassed => "BYPASSED",
         Verdict::NotApplicable => "N/A",
     };
     let note = note.replace(['\t', '\n'], " ");
-    println!("RESULT\t{id}\t{v}\t{attack}\t{note}");
+    println!("RESULT\t{id}\t{v}\t{attack}\t{note}\t{b}");
+}
+
+fn brief(id: &str, v: &Verdict) -> String {
+    let held = matches!(v, Verdict::Held);
+    let scope = ptrace_scope();
+    let s = match (id, held) {
+        ("double-fork-env-intact", true) => "npm_lifecycle_event survives the double fork",
+        ("double-fork-env-intact", false) => "install rule lost track after the double fork",
+        ("double-fork-env-scrubbed", true) => "payload still caught after clearing its env",
+        ("double-fork-env-scrubbed", false) => {
+            "no lineage or env left to mark it as an install; cgroup rule trusts it"
+        }
+        ("fd-passing", true) => "reader is checked again; gets redacted, event logged",
+        ("fd-passing", false) => "passed fd served the real file",
+        ("spoof-argv-comm", true) => "argv and comm don't grant access; exe does",
+        ("spoof-argv-comm", false) => "forged name got the real file",
+        ("trusted-exe-gadget", true) => "trusted exe didn't print the file",
+        ("trusted-exe-gadget", false) => "trusting an exe trusts whatever it's told to do",
+        ("mmap-private", true) => "private mapping didn't pick up the trusted view",
+        ("mmap-private", false) => {
+            "private mapping refaults from page cache a trusted mmap filled; never reaches env-ghost"
+        }
+        ("proc-mem-daemon", true) => "daemon is non-dumpable",
+        ("proc-mem-daemon", false) => "daemon memory readable",
+        ("proc-mem-trusted", true) => return format!("blocked by yama (ptrace_scope={scope})"),
+        ("proc-mem-trusted", false) => {
+            return format!("same-UID memory read works at ptrace_scope={scope}");
+        }
+        ("proc-environ-child", true) => "child environment not readable",
+        ("proc-environ-child", false) => "environ is readable by any same-UID process",
+        ("sigkill-daemon", true) => "plain file not exposed after the kill",
+        ("sigkill-daemon", false) => "watchdog detaches the dead mount; plaintext underneath",
+        ("fusermount-u", true) => "mount could not be removed",
+        ("fusermount-u", false) => "same user can unmount; plaintext underneath",
+        _ => "",
+    };
+    s.to_string()
 }
 
 pub fn has(hay: &[u8], needle: &str) -> bool {

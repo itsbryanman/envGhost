@@ -72,18 +72,25 @@ fn default_policy_path() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".config/env-ghost/policy.toml"))
 }
 
+fn describe(p: &Path, pol: &Policy) -> String {
+    match pol.rule_count() {
+        1 => format!("{}, 1 rule", p.display()),
+        n => format!("{}, {n} rules", p.display()),
+    }
+}
+
 /// Explicit --policy must exist. The default location may be missing, which
 /// means builtins only and everyone else redacted; we say so.
 fn load_policy(explicit: Option<&Path>) -> Result<(Policy, String)> {
     if let Some(p) = explicit {
         let pol = Policy::load(p)?;
-        let desc = format!("{}, {} rules", p.display(), pol.rule_count());
+        let desc = describe(p, &pol);
         return Ok((pol, desc));
     }
     match default_policy_path() {
         Some(p) if p.exists() => {
             let pol = Policy::load(&p)?;
-            let desc = format!("{}, {} rules", p.display(), pol.rule_count());
+            let desc = describe(&p, &pol);
             Ok((pol, desc))
         }
         Some(p) => Ok((
